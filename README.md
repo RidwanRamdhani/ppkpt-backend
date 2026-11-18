@@ -4,7 +4,7 @@ Backend untuk Platform Manajemen Pelaporan & Penanganan Kasus PPKPT.
 
 ## Prasyarat
 
-- Go 1.22+
+- Go 1.26+ (dependensi `minio-go` mensyaratkan Go >= 1.26)
 - Docker + Docker Compose
 - `golang-migrate` CLI
 - `golangci-lint`, `govulncheck`
