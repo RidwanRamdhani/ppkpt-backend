@@ -1,0 +1,6 @@
+#!/bin/sh
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<EOSQL
+CREATE ROLE ppkpt_app LOGIN PASSWORD '${APP_DB_PASSWORD}';
+GRANT CONNECT ON DATABASE ${POSTGRES_DB} TO ppkpt_app;
+GRANT USAGE ON SCHEMA public TO ppkpt_app;
+EOSQL
