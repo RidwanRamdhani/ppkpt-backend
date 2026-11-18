@@ -1,3 +1,6 @@
+-include .env
+export
+
 .PHONY: up migrate-up migrate-down run test lint vuln
 
 up:
