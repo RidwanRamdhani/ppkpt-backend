@@ -38,7 +38,8 @@ type Config struct {
 
 	TrustedProxyCIDRs []string
 
-	Deadline Deadline
+	Deadline  Deadline
+	RateLimit RateLimit
 }
 
 type Storage struct {
@@ -64,6 +65,13 @@ type Deadline struct {
 	WarnExamDays   int
 }
 
+// RateLimit mengatur kuota permintaan per IP per menit. Endpoint publik
+// (pelaporan, cek status) dibuat lebih ketat daripada endpoint autentikasi.
+type RateLimit struct {
+	PublicPerMinute int
+	AuthPerMinute   int
+}
+
 func Load() (Config, error) {
 	cfg := Config{
 		AppEnv:               getenv("APP_ENV", "dev"),
@@ -80,8 +88,8 @@ func Load() (Config, error) {
 		PinLockMinutes:       getenvInt("PIN_LOCK_MINUTES", 15),
 		Storage: Storage{
 			Endpoint:  os.Getenv("S3_ENDPOINT"),
-			AccessKey: os.Getenv("S3_ACCESS_KEY"),
-			SecretKey: os.Getenv("S3_SECRET_KEY"),
+			AccessKey: storageAccessKey(),
+			SecretKey: storageSecretKey(),
 			Bucket:    getenv("S3_BUCKET", "ppkpt-evidence"),
 			UseSSL:    getenvBool("S3_USE_SSL", false),
 		},
@@ -102,6 +110,10 @@ func Load() (Config, error) {
 			ExamDays:       getenvInt("DEADLINE_EXAM_DAYS", 30),
 			WarnReviewDays: getenvInt("DEADLINE_WARN_REVIEW_DAYS", 2),
 			WarnExamDays:   getenvInt("DEADLINE_WARN_EXAM_DAYS", 7),
+		},
+		RateLimit: RateLimit{
+			PublicPerMinute: getenvInt("RATE_LIMIT_PUBLIC_PER_MINUTE", 10),
+			AuthPerMinute:   getenvInt("RATE_LIMIT_AUTH_PER_MINUTE", 5),
 		},
 		TrustedProxyCIDRs: splitCSV(os.Getenv("TRUSTED_PROXY_CIDRS")),
 	}
@@ -156,6 +168,25 @@ func getenvBool(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+// storageAccessKey mengembalikan kredensial service account aplikasi. Di dev,
+// bila S3_ACCESS_KEY belum diisi, kredensial root Silo dari compose dipakai agar
+// `make up && make run` langsung berjalan. Produksi wajib memakai service
+// account terbatas (hanya bucket bukti), bukan kredensial root.
+func storageAccessKey() string {
+	if v := os.Getenv("S3_ACCESS_KEY"); v != "" {
+		return v
+	}
+	return os.Getenv("MINIO_ROOT_USER")
+}
+
+// storageSecretKey adalah pasangan storageAccessKey untuk lingkungan dev.
+func storageSecretKey() string {
+	if v := os.Getenv("S3_SECRET_KEY"); v != "" {
+		return v
+	}
+	return os.Getenv("MINIO_ROOT_PASSWORD")
 }
 
 func splitCSV(s string) []string {
