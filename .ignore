@@ -1,0 +1,5 @@
+# Paksa tool pencarian (glob/grep) mengindeks folder docs.
+# Catatan: ini HANYA memengaruhi tool lokal, bukan git.
+# Untuk git, atur lewat .gitignore.
+!docs/
+!docs/**

@@ -6,19 +6,45 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/config"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/evidence"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/captcha"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/ratelimit"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Dependencies mengelompokkan layanan yang dipakai handler. Menyusunnya di satu
+// tempat membuat komposisi aplikasi eksplisit dan memudahkan pengujian.
+type Dependencies struct {
+	Config        config.Config
+	Pool          *pgxpool.Pool
+	Logger        *slog.Logger
+	Audit         *audit.Service
+	Evidence      *evidence.Service
+	Notifier      *notification.Service
+	Captcha       *captcha.Verifier
+	PublicLimiter *ratelimit.Limiter
+	AuthLimiter   *ratelimit.Limiter
+}
+
 // NewRouter membangun http.Handler dengan seluruh middleware (urutan luar->dalam)
-// dan route dasar. Route fitur (report/cases/auth) ditambahkan pada Phase berikutnya.
-func NewRouter(cfg config.Config, pool *pgxpool.Pool, logger *slog.Logger) http.Handler {
+// dan route dasar. Route fitur (report/cases/auth) ditambahkan pada Phase
+// berikutnya dan memakai layanan dari Dependencies.
+func NewRouter(deps Dependencies) http.Handler {
+	cfg := deps.Config
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	resolver := httpx.NewClientIPResolver(cfg.TrustedProxyCIDRs)
-	isProd := cfg.AppEnv == "production"
+	isProd := cfg.AppEnv == "production" || cfg.AppEnv == "prod"
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", healthHandler(pool))
+	mux.HandleFunc("GET /api/health", healthHandler(deps.Pool))
 
 	withResolver := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
