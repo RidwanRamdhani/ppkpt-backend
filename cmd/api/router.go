@@ -45,6 +45,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(deps.Pool))
+	registerReportRoutes(mux, deps)
 
 	withResolver := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +58,6 @@ func NewRouter(deps Dependencies) http.Handler {
 		httpx.Recover(logger),
 		httpx.SecurityHeaders(isProd),
 		httpx.AccessLog(logger),
-		httpx.BodyLimit(cfg.MaxUploadBytes),
 		httpx.CSRF(cfg.AppOrigin),
 		withResolver,
 	}
