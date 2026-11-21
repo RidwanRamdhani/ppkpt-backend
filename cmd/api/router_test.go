@@ -144,6 +144,42 @@ func TestReportRouteTerdaftar(t *testing.T) {
 	}
 }
 
+func TestStatusRouteTerdaftar(t *testing.T) {
+	router := NewRouter(Dependencies{
+		Config: config.Config{AppOrigin: "http://localhost:3000"},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/status", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("route POST /api/status tidak terdaftar (status %d)", rec.Code)
+	}
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d (%s), ingin 422", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCompleteRouteTerdaftar(t *testing.T) {
+	router := NewRouter(Dependencies{
+		Config: config.Config{AppOrigin: "http://localhost:3000"},
+	})
+
+	req := httptest.NewRequest(http.MethodPut, "/api/reports/20481735/complete", strings.NewReader(""))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=batas")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+		t.Fatalf("route PUT /api/reports/{ticket}/complete tidak terdaftar (status %d)", rec.Code)
+	}
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d (%s), ingin 422", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSubmitBodyLimit(t *testing.T) {
 	cfg := config.Config{MaxUploadBytes: 10 << 20, MaxFilesPerRequest: 10}
 	want := int64(10<<20)*10 + (1 << 20)

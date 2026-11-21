@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"mime/multipart"
+	"strings"
 	"time"
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
@@ -13,6 +14,7 @@ import (
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/db"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/workflow"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
@@ -30,7 +32,11 @@ var errTicketCollision = errors.New("report: kode tiket bentrok")
 
 // Options mengatur perilaku layanan pelaporan.
 type Options struct {
-	BcryptCost int // biaya bcrypt untuk hash PIN; default 12
+	BcryptCost     int // biaya bcrypt untuk hash PIN; default 12
+	PinMaxAttempts int // percobaan PIN sebelum dikunci; default 5
+	PinLockMinutes int // lama kunci PIN; default 15
+	ReviewDueDays  int // tenggat penelaahan untuk state machine
+	ExamDueDays    int // tenggat pemeriksaan untuk state machine
 }
 
 // Result adalah respons 201 berisi tiket dan PIN. PIN hanya diberikan sekali.
@@ -39,16 +45,25 @@ type Result struct {
 	PIN        string `json:"pin"`
 }
 
-// Service mengelola pengiriman laporan portal.
+// Service mengelola pengiriman laporan portal, cek status, dan pelengkapan.
 type Service struct {
-	pool       *pgxpool.Pool
-	evidence   *evidence.Service
-	auditor    *audit.Service
-	notifier   *notification.Service
-	logger     *slog.Logger
-	bcryptCost int
-	now        func() time.Time
+	pool           *pgxpool.Pool
+	evidence       *evidence.Service
+	auditor        *audit.Service
+	notifier       *notification.Service
+	logger         *slog.Logger
+	flow           *workflow.Service
+	bcryptCost     int
+	pinMaxAttempts int
+	pinLockMinutes int
+	dummyPinHash   []byte
+	now            func() time.Time
 }
+
+const (
+	defaultPinMaxAttempts = 5
+	defaultPinLockMinutes = 15
+)
 
 // NewService membuat layanan pelaporan. auditor/notifier/logger boleh nil agar
 // mudah diuji; evidence wajib karena seluruh laporan portal menyertakan bukti.
@@ -70,14 +85,32 @@ func NewService(
 	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
 		cost = bcrypt.DefaultCost
 	}
+	if opts.PinMaxAttempts <= 0 {
+		opts.PinMaxAttempts = defaultPinMaxAttempts
+	}
+	if opts.PinLockMinutes <= 0 {
+		opts.PinLockMinutes = defaultPinLockMinutes
+	}
+
+	// Hash dummy membuat waktu respons tiket tidak dikenal setara dengan PIN
+	// salah pada tiket yang ada.
+	dummy, err := bcrypt.GenerateFromPassword([]byte("dummy-pin-timing"), cost)
+	if err != nil {
+		logger.Error("gagal membuat hash dummy PIN", "err", err)
+	}
+
 	return &Service{
-		pool:       pool,
-		evidence:   evidenceSvc,
-		auditor:    auditor,
-		notifier:   notifier,
-		logger:     logger,
-		bcryptCost: cost,
-		now:        time.Now,
+		pool:           pool,
+		evidence:       evidenceSvc,
+		auditor:        auditor,
+		notifier:       notifier,
+		logger:         logger,
+		flow:           workflow.NewService(auditor, workflow.Options{ReviewDueDays: opts.ReviewDueDays, ExamDueDays: opts.ExamDueDays}),
+		bcryptCost:     cost,
+		pinMaxAttempts: opts.PinMaxAttempts,
+		pinLockMinutes: opts.PinLockMinutes,
+		dummyPinHash:   dummy,
+		now:            time.Now,
 	}
 }
 
@@ -354,6 +387,126 @@ func insertViolationTypes(ctx context.Context, tx pgx.Tx, reportID int64, codes 
 		}
 	}
 	return nil
+}
+
+// Status mengembalikan proyeksi status yang aman untuk pelapor. Catatan
+// verifikasi hanya diambil untuk status PERLU_DILENGKAPI (FR-14).
+func (s *Service) Status(ctx context.Context, r Report, ip string) (StatusView, error) {
+	var note string
+	if r.Status == workflow.PerluDilengkapi {
+		err := s.pool.QueryRow(ctx, `
+			SELECT COALESCE(note_for_reporter, '')
+			FROM verifications
+			WHERE report_id = $1
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1`, r.ID).Scan(&note)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return StatusView{}, fmt.Errorf("report: baca catatan verifikasi: %w", err)
+		}
+	}
+
+	view := PresentStatus(r, note, s.now())
+
+	// Audit cek status bersifat best-effort: kegagalan audit tidak boleh
+	// menghalangi pelapor melihat status laporannya.
+	event := audit.Event{
+		ActorType: audit.ActorReporter,
+		Action:    audit.ActionStatusChecked,
+		Entity:    "report",
+		EntityID:  &r.ID,
+		IP:        ip,
+	}
+	if err := s.auditor.Log(ctx, s.pool, event); err != nil {
+		s.logger.Warn("gagal mencatat audit cek status", "report_id", r.ID, "err", err)
+	}
+	return view, nil
+}
+
+const appendDescriptionSQL = `
+	UPDATE reports
+	SET additional_description = CASE
+	      WHEN additional_description IS NULL OR additional_description = '' THEN $2
+	      ELSE additional_description || E'\n\n' || $2
+	    END,
+	    updated_at = now()
+	WHERE id = $1 AND status = $3`
+
+// Complete menyimpan tambahan dari pelapor (teks dan/atau berkas) lalu
+// mengembalikan status ke DILAPORKAN (FR-15).
+//
+// Hanya berlaku saat status PERLU_DILENGKAPI; status lain ditolak 409. Objek
+// yang terlanjur diunggah dihapus bila transaksi gagal (NFR-21).
+func (s *Service) Complete(ctx context.Context, r Report, additionalText string, files []*multipart.FileHeader, ip string) (Completion, error) {
+	if err := workflow.EnsureWritable(r.Status); err != nil {
+		return Completion{}, err
+	}
+	if r.Status != workflow.PerluDilengkapi {
+		return Completion{}, httpx.ErrConflict("Laporan tidak sedang menunggu pelengkapan.")
+	}
+
+	additionalText = strings.TrimSpace(additionalText)
+	if additionalText == "" && len(files) == 0 {
+		appErr := httpx.ErrValidation("Tulis tambahan atau lampirkan berkas terlebih dahulu.")
+		appErr.Fields = map[string]string{"additional_text": appErr.Message}
+		return Completion{}, appErr
+	}
+
+	validated, err := s.evidence.Validate(files)
+	if err != nil {
+		return Completion{}, err
+	}
+
+	var stored []evidence.Stored
+	cleanup := func() {}
+	if len(validated) > 0 {
+		stored, cleanup, err = s.evidence.StoreFiles(ctx, validated)
+		if err != nil {
+			return Completion{}, err
+		}
+	}
+
+	marker := ""
+	if additionalText != "" {
+		marker = fmt.Sprintf("[%s WIB] %s",
+			s.now().In(jakartaZone).Format("2006-01-02 15:04"), additionalText)
+	}
+
+	err = db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if marker != "" {
+			tag, err := tx.Exec(ctx, appendDescriptionSQL, r.ID, marker, string(workflow.PerluDilengkapi))
+			if err != nil {
+				return fmt.Errorf("report: simpan tambahan: %w", err)
+			}
+			if tag.RowsAffected() == 0 {
+				return httpx.ErrConflict("Status laporan sudah berubah. Muat ulang data lalu coba lagi.")
+			}
+		}
+
+		if len(stored) > 0 {
+			if err := s.evidence.SaveMetadata(ctx, tx, r.ID, evidence.CategoryBukti, stored, nil); err != nil {
+				return err
+			}
+		}
+
+		if err := s.flow.Transition(ctx, tx, r.ID, workflow.PerluDilengkapi, workflow.Dilaporkan, nil); err != nil {
+			return err
+		}
+
+		return s.auditor.Log(ctx, tx, audit.Event{
+			ActorType: audit.ActorReporter,
+			Action:    audit.ActionReportCompleted,
+			Entity:    "report",
+			EntityID:  &r.ID,
+			IP:        ip,
+			Detail:    map[string]any{"files_added": len(stored)},
+		})
+	})
+	if err != nil {
+		cleanup()
+		return Completion{}, err
+	}
+
+	return Completion{CaseNumber: r.CaseNumber, Status: string(workflow.Dilaporkan)}, nil
 }
 
 // nullIfEmpty mengubah string kosong menjadi NULL agar kolom opsional tidak
