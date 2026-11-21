@@ -36,6 +36,7 @@ type Report struct {
 	PinLockedUntil *time.Time
 	ReviewDueAt    *time.Time
 	ExamDueAt      *time.Time
+	ReporterEmail  string
 }
 
 // errInvalidPIN sengaja sama untuk tiket tidak dikenal dan PIN salah agar tidak
@@ -51,10 +52,12 @@ func errPINLocked() *httpx.AppError {
 }
 
 const findByTicketSQL = `
-	SELECT id, case_number, status, pin_hash, pin_failed_count,
-	       pin_locked_until, review_due_at, exam_due_at
-	FROM reports
-	WHERE case_number = $1::char(8)`
+	SELECT r.id, r.case_number, r.status, r.pin_hash, r.pin_failed_count,
+	       r.pin_locked_until, r.review_due_at, r.exam_due_at,
+	       COALESCE(rp.email, '')
+	FROM reports r
+	LEFT JOIN reporters rp ON rp.report_id = r.id
+	WHERE r.case_number = $1::char(8)`
 
 func (s *Service) findByTicket(ctx context.Context, ticket string) (Report, error) {
 	var r Report
@@ -67,6 +70,7 @@ func (s *Service) findByTicket(ctx context.Context, ticket string) (Report, erro
 		&r.PinLockedUntil,
 		&r.ReviewDueAt,
 		&r.ExamDueAt,
+		&r.ReporterEmail,
 	)
 	if err != nil {
 		return Report{}, err

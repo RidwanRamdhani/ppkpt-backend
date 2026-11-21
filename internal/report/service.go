@@ -506,7 +506,21 @@ func (s *Service) Complete(ctx context.Context, r Report, additionalText string,
 		return Completion{}, err
 	}
 
+	// Email dikirim setelah commit: bila transaksi gagal, pelapor tidak
+	// menerima notifikasi palsu (FR-16).
+	s.notifyStatusChanged(r)
+
 	return Completion{CaseNumber: r.CaseNumber, Status: string(workflow.Dilaporkan)}, nil
+}
+
+// notifyStatusChanged memberi tahu pelapor bahwa status laporan berubah.
+// Isi email hanya mengarahkan ke halaman cek status, tanpa status atau detail
+// kasus (FR-16, NFR-22). Reporter tanpa email dilewati oleh notification.Service.
+func (s *Service) notifyStatusChanged(r Report) {
+	if s.notifier == nil {
+		return
+	}
+	s.notifier.SendStatusUpdate(r.ReporterEmail, r.CaseNumber)
 }
 
 // nullIfEmpty mengubah string kosong menjadi NULL agar kolom opsional tidak
