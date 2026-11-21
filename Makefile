@@ -43,7 +43,7 @@ test:
 
 # Memerlukan database yang sudah dimigrasi dan .env berisi DATABASE_URL.
 test-integration:
-	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/auth -count=1
+	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/auth ./internal/workflow -count=1
 
 # Uji end-to-end modul autentikasi terhadap API sungguhan (curl). Butuh database
 # yang sudah dimigrasi; API dijalankan otomatis bila belum berjalan.
