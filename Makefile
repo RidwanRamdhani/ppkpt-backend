@@ -30,7 +30,7 @@ test:
 
 # Memerlukan database yang sudah dimigrasi dan .env berisi DATABASE_URL.
 test-integration:
-	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit -run TestIntegrasi -count=1
+	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/workflow -run TestIntegrasi -count=1
 
 lint:
 	golangci-lint run ./...
