@@ -17,13 +17,14 @@ import (
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/evidence"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/captcha"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/report"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
-func newStatusIntegration(t *testing.T) (*pgxpool.Pool, *report.Service, *report.Handler) {
+func newStatusIntegration(t *testing.T) (*pgxpool.Pool, *report.Service, *report.Handler, *fakeSender) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -37,11 +38,13 @@ func newStatusIntegration(t *testing.T) (*pgxpool.Pool, *report.Service, *report
 	t.Cleanup(pool.Close)
 
 	store := newFakeObjectStore()
+	sender := &fakeSender{}
 	svc := report.NewService(
 		pool,
 		evidence.NewService(store, audit.NewService(), nil, evidence.Options{MaxUploadBytes: 1 << 20, MaxFiles: 5}),
 		audit.NewService(),
-		nil, nil,
+		notification.New(sender, nil),
+		nil,
 		report.Options{BcryptCost: bcrypt.MinCost},
 	)
 	captchaVerifier, err := captcha.New(false, "", "")
@@ -49,7 +52,7 @@ func newStatusIntegration(t *testing.T) (*pgxpool.Pool, *report.Service, *report
 		t.Fatalf("captcha: %v", err)
 	}
 	handler := report.NewHandler(svc, captchaVerifier, nil, nil, 20<<20)
-	return pool, svc, handler
+	return pool, svc, handler, sender
 }
 
 func createReportForTest(t *testing.T, pool *pgxpool.Pool, svc *report.Service) (ticket, pin string, id int64) {
@@ -93,7 +96,7 @@ func createUserForTest(t *testing.T, pool *pgxpool.Pool) int64 {
 }
 
 func TestIntegrasiCekStatus(t *testing.T) {
-	pool, svc, handler := newStatusIntegration(t)
+	pool, svc, handler, _ := newStatusIntegration(t)
 	ticket, pin, id := createReportForTest(t, pool, svc)
 	ctx := context.Background()
 
@@ -169,7 +172,7 @@ func TestIntegrasiCekStatus(t *testing.T) {
 }
 
 func TestIntegrasiStatusPerluDilengkapiDanTenggat(t *testing.T) {
-	pool, svc, handler := newStatusIntegration(t)
+	pool, svc, handler, _ := newStatusIntegration(t)
 	userID := createUserForTest(t, pool)
 	ticket, pin, id := createReportForTest(t, pool, svc)
 	ctx := context.Background()
@@ -227,7 +230,7 @@ func TestIntegrasiStatusPerluDilengkapiDanTenggat(t *testing.T) {
 }
 
 func TestIntegrasiComplete(t *testing.T) {
-	pool, svc, handler := newStatusIntegration(t)
+	pool, svc, handler, sender := newStatusIntegration(t)
 	ticket, pin, id := createReportForTest(t, pool, svc)
 	ctx := context.Background()
 
@@ -299,11 +302,43 @@ func TestIntegrasiComplete(t *testing.T) {
 		t.Errorf("audit REPORT_COMPLETED = %d, ingin 1", auditCount)
 	}
 
+	// FR-16: satu email "status berubah" setelah commit, tanpa detail status.
+	// Email bukti pelaporan dari Submit dihitung sebagai baseline.
+	sender.mu.Lock()
+	emails := append([]sentEmail(nil), sender.emails...)
+	sender.mu.Unlock()
+	if len(emails) != 2 {
+		t.Fatalf("email total = %d, ingin 2 (bukti + status)", len(emails))
+	}
+	statusEmail := emails[len(emails)-1]
+	if statusEmail.subject != "Pembaruan status laporan PPKPT" {
+		t.Errorf("email terakhir bukan notifikasi status: %q", statusEmail.subject)
+	}
+	if statusEmail.to != "pelapor@example.test" {
+		t.Errorf("email dikirim ke %q", statusEmail.to)
+	}
+	if !strings.Contains(statusEmail.body, ticket) {
+		t.Errorf("email tidak memuat kode tiket: %q", statusEmail.body)
+	}
+	for _, leak := range []string{"DILAPORKAN", "PERLU_DILENGKAPI", "tambahan dari pelapor"} {
+		if strings.Contains(statusEmail.body, leak) {
+			t.Errorf("email membocorkan %q", leak)
+		}
+	}
+
 	// Pelengkapan kedua ditolak 409 karena status bukan PERLU_DILENGKAPI lagi.
 	req = newCompleteRequest(t, completeUpload{ticket: ticket, pin: pin, text: "lagi"})
 	rec = httptest.NewRecorder()
 	handler.Complete(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("pelengkapan kedua = %d (%s), ingin 409", rec.Code, rec.Body.String())
+	}
+
+	// Transisi yang gagal tidak boleh mengirim email tambahan.
+	sender.mu.Lock()
+	after := len(sender.emails)
+	sender.mu.Unlock()
+	if after != 2 {
+		t.Errorf("email setelah percobaan gagal = %d, ingin tetap 2", after)
 	}
 }

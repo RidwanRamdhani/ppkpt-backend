@@ -109,6 +109,10 @@ const insertHistorySQL = `
 // by adalah ID petugas yang memicu; nil berarti pelapor (mis. melengkapi
 // laporan). Kegagalan audit membatalkan seluruh transaksi, sehingga tidak ada
 // perubahan status tanpa jejak audit.
+//
+// Notifikasi email bukan tanggung jawab workflow: kirim setelah transaksi
+// commit (mis. notification.Service.SendStatusUpdate) agar email tidak terkirim
+// untuk perubahan yang akhirnya di-rollback.
 func (s *Service) Transition(ctx context.Context, q DBTX, reportID int64, from, to Status, by *int64) error {
 	if reportID <= 0 {
 		return fmt.Errorf("workflow: report id %d tidak valid", reportID)
