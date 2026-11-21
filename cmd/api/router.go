@@ -33,8 +33,8 @@ type Dependencies struct {
 }
 
 // NewRouter membangun http.Handler dengan seluruh middleware (urutan luar->dalam),
-// route dasar, dan route autentikasi. Route fitur (report/cases) ditambahkan pada
-// Phase berikutnya dan memakai layanan dari Dependencies.
+// route dasar, route autentikasi, dan route pelaporan publik. Route fitur kasus
+// ditambahkan pada Phase berikutnya dan memakai layanan dari Dependencies.
 func NewRouter(deps Dependencies) http.Handler {
 	cfg := deps.Config
 	logger := deps.Logger
@@ -47,6 +47,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(deps.Pool))
+	registerReportRoutes(mux, deps)
 
 	// Autentikasi: login, logout, ganti password, dan /me. Login dan ganti
 	// password dibatasi AuthLimiter (per IP). Route fitur lain memakai
@@ -65,12 +66,15 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 	}
 
+	// Batas ukuran body sengaja tidak dipasang global: tiap route menegakkan
+	// batasnya sendiri. Route JSON memakai httpx.ReadJSON (1 MiB), sedangkan
+	// route multipart pelaporan memakai MaxBytesReader sebesar submitBodyLimit
+	// (total semua berkas) karena jauh lebih besar dari batas per berkas.
 	chain := []func(http.Handler) http.Handler{
 		httpx.RequestID,
 		httpx.Recover(logger),
 		httpx.SecurityHeaders(isProd),
 		httpx.AccessLog(logger),
-		httpx.BodyLimit(cfg.MaxUploadBytes),
 		httpx.CSRF(cfg.AppOrigin),
 		withResolver,
 	}
