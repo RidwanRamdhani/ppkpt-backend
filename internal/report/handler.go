@@ -25,10 +25,13 @@ const (
 	multipartOverhead     = 1 << 20 // ruang untuk boundary/header/payload JSON
 )
 
-// Submitter adalah operasi yang dibutuhkan handler. *Service memenuhinya;
+// Backend adalah operasi yang dibutuhkan handler. *Service memenuhinya;
 // interface ini memudahkan pengujian HTTP tanpa database.
-type Submitter interface {
+type Backend interface {
 	Submit(ctx context.Context, req SubmitRequest, files []*multipart.FileHeader, ip string) (Result, error)
+	VerifyPIN(ctx context.Context, ticket, pin string) (Report, error)
+	Status(ctx context.Context, report Report, ip string) (StatusView, error)
+	Complete(ctx context.Context, report Report, additionalText string, files []*multipart.FileHeader, ip string) (Completion, error)
 }
 
 // CaptchaVerifier memverifikasi token captcha di sisi server.
@@ -41,18 +44,19 @@ type Limiter interface {
 	Allow(key string) bool
 }
 
-// Handler melayani POST /api/reports (multipart/form-data).
+// Handler melayani endpoint pelaporan publik:
+// POST /api/reports, POST /api/status, dan PUT /api/reports/{ticket}/complete.
 type Handler struct {
-	submitter Submitter
-	captcha   CaptchaVerifier
-	limiter   Limiter
-	logger    *slog.Logger
-	maxBody   int64
+	backend Backend
+	captcha CaptchaVerifier
+	limiter Limiter
+	logger  *slog.Logger
+	maxBody int64
 }
 
 // NewHandler membuat handler pelaporan. maxBody adalah batas total body
 // multipart (semua berkas + payload); nilai <= 0 diganti default aman.
-func NewHandler(submitter Submitter, captchaVerifier CaptchaVerifier, limiter Limiter, logger *slog.Logger, maxBody int64) *Handler {
+func NewHandler(backend Backend, captchaVerifier CaptchaVerifier, limiter Limiter, logger *slog.Logger, maxBody int64) *Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -60,11 +64,11 @@ func NewHandler(submitter Submitter, captchaVerifier CaptchaVerifier, limiter Li
 		maxBody = int64(defaultMaxUploadBytes)*defaultMaxFiles + multipartOverhead
 	}
 	return &Handler{
-		submitter: submitter,
-		captcha:   captchaVerifier,
-		limiter:   limiter,
-		logger:    logger,
-		maxBody:   maxBody,
+		backend: backend,
+		captcha: captchaVerifier,
+		limiter: limiter,
+		logger:  logger,
+		maxBody: maxBody,
 	}
 }
 
@@ -75,23 +79,10 @@ func NewHandler(submitter Submitter, captchaVerifier CaptchaVerifier, limiter Li
 // penyalahgunaan tidak membebani storage.
 func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	ip := ratelimit.ClientKey(r)
-
-	if h.limiter != nil && !h.limiter.Allow(ip) {
-		w.Header().Set("Retry-After", "60")
-		httpx.WriteError(w, httpx.ErrTooMany("Terlalu banyak permintaan. Silakan coba lagi nanti."))
+	if !h.allow(w, ip) {
 		return
 	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxBody)
-	// Body sudah dibatasi MaxBytesReader di atas; gosec tidak mengenali pola
-	// assignment ini sehingga peringatan G120 ditekan dengan alasan tersebut.
-	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil { //nolint:gosec // total body dibatasi MaxBytesReader
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeFieldError(w, "payload", "Ukuran permintaan terlalu besar.")
-			return
-		}
-		writeFieldError(w, "payload", "Formulir tidak valid.")
+	if !h.parseMultipart(w, r) {
 		return
 	}
 
@@ -116,18 +107,124 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var files []*multipart.FileHeader
-	if r.MultipartForm != nil {
-		files = r.MultipartForm.File["evidences"]
-	}
-
-	result, err := h.submitter.Submit(r.Context(), req, files, ip)
+	result, err := h.backend.Submit(r.Context(), req, multipartFiles(r), ip)
 	if err != nil {
 		h.writeServiceError(w, r, err)
 		return
 	}
 
 	httpx.WriteJSON(w, http.StatusCreated, result)
+}
+
+// Status menangani POST /api/status. Hanya membutuhkan kode tiket dan PIN.
+func (h *Handler) Status(w http.ResponseWriter, r *http.Request) {
+	if !h.allow(w, ratelimit.ClientKey(r)) {
+		return
+	}
+
+	var req StatusRequest
+	if err := httpx.ReadJSON(w, r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	fields := map[string]string{}
+	if strings.TrimSpace(req.CaseNumber) == "" {
+		fields["case_number"] = "Wajib diisi."
+	}
+	if strings.TrimSpace(req.PIN) == "" {
+		fields["pin"] = "Wajib diisi."
+	}
+	if len(fields) > 0 {
+		writeFieldsError(w, fields)
+		return
+	}
+
+	report, err := h.backend.VerifyPIN(r.Context(), req.CaseNumber, req.PIN)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+
+	view, err := h.backend.Status(r.Context(), report, ratelimit.ClientKey(r))
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, view)
+}
+
+// Complete menangani PUT /api/reports/{ticket}/complete (multipart).
+func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
+	ip := ratelimit.ClientKey(r)
+	if !h.allow(w, ip) {
+		return
+	}
+	if !h.parseMultipart(w, r) {
+		return
+	}
+
+	ticket := strings.TrimSpace(r.PathValue("ticket"))
+	pin := formValue(r, "pin")
+
+	fields := map[string]string{}
+	if ticket == "" {
+		fields["case_number"] = "Wajib diisi."
+	}
+	if strings.TrimSpace(pin) == "" {
+		fields["pin"] = "Wajib diisi."
+	}
+	if len(fields) > 0 {
+		writeFieldsError(w, fields)
+		return
+	}
+
+	report, err := h.backend.VerifyPIN(r.Context(), ticket, pin)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+
+	result, err := h.backend.Complete(r.Context(), report, formValue(r, "additional_text"), multipartFiles(r), ip)
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+// allow menerapkan rate limit per IP. Header Retry-After membantu klien.
+func (h *Handler) allow(w http.ResponseWriter, ip string) bool {
+	if h.limiter == nil || h.limiter.Allow(ip) {
+		return true
+	}
+	w.Header().Set("Retry-After", "60")
+	httpx.WriteError(w, httpx.ErrTooMany("Terlalu banyak permintaan. Silakan coba lagi nanti."))
+	return false
+}
+
+// parseMultipart membatasi total body lalu mem-parse formulir. Body sudah
+// dibatasi MaxBytesReader; gosec tidak mengenali pola assignment ini sehingga
+// peringatan G120 ditekan dengan alasan tersebut.
+func (h *Handler) parseMultipart(w http.ResponseWriter, r *http.Request) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxBody)
+	if err := r.ParseMultipartForm(maxMultipartMemory); err != nil { //nolint:gosec // total body dibatasi MaxBytesReader
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeFieldError(w, "form", "Ukuran permintaan terlalu besar.")
+			return false
+		}
+		writeFieldError(w, "form", "Formulir tidak valid.")
+		return false
+	}
+	return true
+}
+
+func multipartFiles(r *http.Request) []*multipart.FileHeader {
+	if r.MultipartForm == nil {
+		return nil
+	}
+	return r.MultipartForm.File["evidences"]
 }
 
 // formValue mengambil field teks hanya dari body multipart, bukan query string,
@@ -160,6 +257,9 @@ func decodePayload(raw string, dst *SubmitRequest) error {
 
 func (h *Handler) writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	appErr := httpx.FromError(err)
+	if appErr.Status == http.StatusTooManyRequests {
+		w.Header().Set("Retry-After", "60")
+	}
 	if appErr.Status >= http.StatusInternalServerError {
 		// Detail teknis hanya masuk log server, tidak pernah ke respons (NFR-23).
 		h.logger.Error("gagal memproses laporan",
@@ -170,8 +270,12 @@ func (h *Handler) writeServiceError(w http.ResponseWriter, r *http.Request, err 
 }
 
 func writeFieldError(w http.ResponseWriter, field, message string) {
-	appErr := httpx.ErrValidation(message)
-	appErr.Fields = map[string]string{field: message}
+	writeFieldsError(w, map[string]string{field: message})
+}
+
+func writeFieldsError(w http.ResponseWriter, fields map[string]string) {
+	appErr := httpx.ErrValidation("Data yang dikirim belum lengkap atau tidak valid.")
+	appErr.Fields = fields
 	httpx.WriteError(w, appErr)
 }
 

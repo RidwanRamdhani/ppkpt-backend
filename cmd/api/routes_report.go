@@ -17,7 +17,13 @@ func registerReportRoutes(mux *http.ServeMux, deps Dependencies) {
 		deps.Audit,
 		deps.Notifier,
 		deps.Logger,
-		report.Options{BcryptCost: deps.Config.BcryptCost},
+		report.Options{
+			BcryptCost:     deps.Config.BcryptCost,
+			PinMaxAttempts: deps.Config.PinMaxAttempts,
+			PinLockMinutes: deps.Config.PinLockMinutes,
+			ReviewDueDays:  deps.Config.Deadline.ReviewDays,
+			ExamDueDays:    deps.Config.Deadline.ExamDays,
+		},
 	)
 	// Interface yang menyimpan pointer nil tetap dianggap non-nil oleh Go,
 	// jadi limiter hanya diteruskan bila benar-benar tersedia.
@@ -34,6 +40,8 @@ func registerReportRoutes(mux *http.ServeMux, deps Dependencies) {
 		submitBodyLimit(deps.Config),
 	)
 	mux.Handle("POST /api/reports", http.HandlerFunc(handler.Submit))
+	mux.Handle("POST /api/status", http.HandlerFunc(handler.Status))
+	mux.Handle("PUT /api/reports/{ticket}/complete", http.HandlerFunc(handler.Complete))
 }
 
 // submitBodyLimit menghitung batas total body unggahan: seluruh berkas maksimum
