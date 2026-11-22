@@ -24,16 +24,7 @@ cmd/          entrypoint (api, provision, seed)
 internal/     kode aplikasi per modul
 migrations/   migrasi SQL golang-migrate
 deploy/       Dockerfile, docker-compose, init DB
-docs/         dokumentasi (api, decisions, erd)
 ```
-
-## Dokumentasi
-
-- `docs/BACKEND_IMPLEMENTATION_GUIDE.md` — panduan implementasi per phase.
-- `docs/DECISIONS.md` — keputusan teknis dan deviasi dari SDD.
-- `docs/PHASE4_IMPLEMENTATION.md` — rincian implementasi Phase 4 (layanan platform).
-- `docs/PHASE5_IMPLEMENTATION.md` — rincian implementasi Phase 5 (autentikasi, sesi, otorisasi, provisioning akun).
-- `docs/erd.png` — ERD database.
 
 ## Konfigurasi
 
@@ -42,26 +33,6 @@ Salin `.env.example` menjadi `.env` lalu sesuaikan.
 Di dev, `S3_ACCESS_KEY`/`S3_SECRET_KEY` boleh dikosongkan; aplikasi memakai
 `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` dari compose. Di produksi isi dengan
 service account Silo yang hanya berhak pada bucket bukti.
-
-## Layanan platform (Phase 4)
-
-- `internal/audit` — audit log append-only; perubahan data menulis audit di
-  transaksi yang sama.
-- `internal/platform/storage` + `internal/evidence` — validasi tipe dari isi
-  berkas, object key acak, bucket privat, unduhan selalu lewat backend.
-- `internal/platform/mailer` + `internal/notification` — antrean email async
-  dengan retry dan template notifikasi.
-- `internal/platform/captcha` + `internal/platform/ratelimit` — verifikasi
-  captcha server-side dan token bucket per IP.
-
-## Autentikasi dan akun (Phase 5)
-
-- `internal/auth` — login, sesi cookie, otorisasi role/permission, ganti
-  password, dan pembuatan/penonaktifan akun.
-- Route: `POST /api/auth/login`, `POST /api/auth/logout`,
-  `PUT /api/auth/password`, `GET /api/auth/me`.
-- Route fitur memakai `deps.Auth.Protect(auth.PermXxx, handler)`.
-- Tidak ada halaman manajemen akun. Akun dikelola oleh sistem:
 
 ```bash
 make seed                      # akun awal dari SEED_* di .env
