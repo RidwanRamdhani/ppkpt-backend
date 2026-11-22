@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	// MinPasswordLength adalah panjang minimum password (dalam karakter).
-	MinPasswordLength = 10
+	// MinPasswordLength adalah panjang minimum password (dalam karakter),
+	// sesuai BACKEND_IMPLEMENTATION_GUIDE Phase 5.
+	MinPasswordLength = 8
 	// MaxPasswordBytes adalah batas bcrypt: byte setelah ke-72 diabaikan.
 	// Password lebih panjang ditolak agar tidak terpotong diam-diam.
 	MaxPasswordBytes = 72
@@ -88,7 +89,7 @@ func ValidatePassword(password string, forbidden ...string) *httpx.AppError {
 		return e
 	}
 	if utf8.RuneCountInString(password) < MinPasswordLength {
-		return fail("Password minimal 10 karakter.")
+		return fail("Password minimal 8 karakter.")
 	}
 	if len(password) > MaxPasswordBytes {
 		return fail("Password terlalu panjang (maksimal 72 byte).")

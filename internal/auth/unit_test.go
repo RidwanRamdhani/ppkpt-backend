@@ -29,6 +29,8 @@ func TestValidatePassword(t *testing.T) {
 		ok   bool
 	}{
 		{"valid", "Sandi-Uji-12345", nil, true},
+		{"tepat 8 karakter", "Sandi123", nil, true},
+		{"kurang dari 8", "Sandi12", nil, false},
 		{"terlalu pendek", "Ab1", nil, false},
 		{"tanpa angka", "HurufSajaPanjang", nil, false},
 		{"tanpa huruf", "1234567890123", nil, false},
