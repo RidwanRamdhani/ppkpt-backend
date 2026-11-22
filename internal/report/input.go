@@ -316,7 +316,10 @@ func validatePerson(v *validator, prefix string, p PersonInput) {
 }
 
 func validateIncident(now time.Time, inc IncidentRequest, prefix string, v *validator) (Incident, error) {
-	start, err := time.Parse("2006-01-02", strings.TrimSpace(inc.DateStart))
+	// Tanggal diparse di zona WIB agar perbandingan dengan "hari ini" konsisten;
+	// time.Parse biasa menghasilkan tengah malam UTC yang bisa membuat tanggal
+	// hari ini di WIB dianggap sebagai masa depan.
+	start, err := time.ParseInLocation("2006-01-02", strings.TrimSpace(inc.DateStart), jakartaZone)
 	if err != nil {
 		v.add(prefix+".date_start", "Tanggal kejadian tidak valid (YYYY-MM-DD).")
 		return Incident{}, err
@@ -334,12 +337,15 @@ func validateIncident(now time.Time, inc IncidentRequest, prefix string, v *vali
 	}
 
 	if endRaw := strings.TrimSpace(inc.DateEnd); endRaw != "" {
-		end, err := time.Parse("2006-01-02", endRaw)
-		if err != nil {
+		end, err := time.ParseInLocation("2006-01-02", endRaw, jakartaZone)
+		switch {
+		case err != nil:
 			v.add(prefix+".date_end", "Tanggal akhir tidak valid (YYYY-MM-DD).")
-		} else if end.Before(start) {
+		case end.Before(start):
 			v.add(prefix+".date_end", "Tanggal akhir tidak boleh sebelum tanggal mulai.")
-		} else {
+		case end.After(today):
+			v.add(prefix+".date_end", "Tanggal akhir tidak boleh di masa depan.")
+		default:
 			parsed.DateEnd = &end
 		}
 	}

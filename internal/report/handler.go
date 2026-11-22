@@ -23,6 +23,10 @@ const (
 	defaultMaxUploadBytes = 10 << 20 // 10 MB per berkas (SDD M01)
 	defaultMaxFiles       = 10
 	multipartOverhead     = 1 << 20 // ruang untuk boundary/header/payload JSON
+
+	// CaptchaHeader membawa token captcha di luar body multipart. Token harus
+	// tersedia sebelum body dibaca agar berkas tidak pernah diparse lebih dulu.
+	CaptchaHeader = "X-Captcha-Token"
 )
 
 // Backend adalah operasi yang dibutuhkan handler. *Service memenuhinya;
@@ -34,7 +38,8 @@ type Backend interface {
 	Complete(ctx context.Context, report Report, additionalText string, files []*multipart.FileHeader, ip string) (Completion, error)
 }
 
-// CaptchaVerifier memverifikasi token captcha di sisi server.
+// CaptchaVerifier memverifikasi token captcha di sisi server. Implementasi
+// captcha.Verifier mengabaikan verifikasi saat captcha dinonaktifkan.
 type CaptchaVerifier interface {
 	Verify(ctx context.Context, token, ip string) error
 }
@@ -74,25 +79,25 @@ func NewHandler(backend Backend, captchaVerifier CaptchaVerifier, limiter Limite
 
 // Submit menangani pengiriman laporan publik.
 //
-// Urutan pemeriksaan: rate limit -> batas body -> parse multipart -> captcha ->
-// validasi & simpan. Captcha diperiksa sebelum berkas diproses agar
-// penyalahgunaan tidak membebani storage.
+// Urutan pemeriksaan: rate limit -> captcha (header) -> batas body/multipart ->
+// validasi & simpan. Token captcha wajib dikirim pada header X-Captcha-Token
+// agar dapat diverifikasi sebelum ParseMultipartForm membaca body dan menulis
+// berkas ke memori/berkas sementara.
 func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	ip := ratelimit.ClientKey(r)
 	if !h.allow(w, ip) {
 		return
 	}
-	if !h.parseMultipart(w, r) {
-		return
-	}
-
 	if h.captcha != nil {
-		if err := h.captcha.Verify(r.Context(), formValue(r, "captcha_token"), ip); err != nil {
+		if err := h.captcha.Verify(r.Context(), strings.TrimSpace(r.Header.Get(CaptchaHeader)), ip); err != nil {
 			// Semua kegagalan captcha dipetakan ke 429 agar tidak membocorkan
 			// alasan internal ke klien.
 			httpx.WriteError(w, httpx.ErrTooMany("Verifikasi keamanan gagal. Silakan coba lagi."))
 			return
 		}
+	}
+	if !h.parseMultipart(w, r) {
+		return
 	}
 
 	raw := formValue(r, "payload")

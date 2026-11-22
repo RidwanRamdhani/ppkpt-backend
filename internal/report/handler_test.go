@@ -78,7 +78,13 @@ type fakeCaptcha struct {
 
 func (f *fakeCaptcha) Verify(_ context.Context, token, _ string) error {
 	f.token = token
-	return f.err
+	if f.err != nil {
+		return f.err
+	}
+	if strings.TrimSpace(token) == "" {
+		return captcha.ErrFailed
+	}
+	return nil
 }
 
 type fakeLimiter struct {
@@ -106,11 +112,6 @@ func newMultipartRequest(t *testing.T, payload, captchaToken string, files []upl
 			t.Fatalf("tulis payload: %v", err)
 		}
 	}
-	if captchaToken != "" {
-		if err := w.WriteField("captcha_token", captchaToken); err != nil {
-			t.Fatalf("tulis captcha: %v", err)
-		}
-	}
 	for _, f := range files {
 		part, err := w.CreateFormFile("evidences", f.name)
 		if err != nil {
@@ -126,6 +127,9 @@ func newMultipartRequest(t *testing.T, payload, captchaToken string, files []upl
 
 	req := httptest.NewRequest(http.MethodPost, "/api/reports", &buf)
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	if captchaToken != "" {
+		req.Header.Set(report.CaptchaHeader, captchaToken)
+	}
 	req.RemoteAddr = "198.51.100.7:4321"
 	return req
 }
@@ -213,6 +217,41 @@ func TestHandlerRejectsCaptchaFailure(t *testing.T) {
 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, ingin 429", rec.Code)
+	}
+	if sub.calls != 0 {
+		t.Error("Submit dipanggil padahal captcha gagal")
+	}
+}
+
+func TestHandlerRejectsMissingCaptchaHeader(t *testing.T) {
+	sub := &fakeBackend{}
+	h := report.NewHandler(sub, &fakeCaptcha{}, nil, nil, 1<<20)
+
+	rec := httptest.NewRecorder()
+	h.Submit(rec, newMultipartRequest(t, `{}`, "", nil))
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, ingin 429", rec.Code)
+	}
+	if sub.calls != 0 {
+		t.Error("Submit dipanggil padahal token captcha tidak ada")
+	}
+}
+
+// TestHandlerCaptchaSebelumMultipart memastikan captcha diverifikasi sebelum
+// body multipart diparse. Body yang rusak harus tetap menghasilkan 429, bukan
+// 422 dari ParseMultipartForm.
+func TestHandlerCaptchaSebelumMultipart(t *testing.T) {
+	sub := &fakeBackend{}
+	h := report.NewHandler(sub, &fakeCaptcha{err: captcha.ErrFailed}, nil, nil, 1<<20)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reports", strings.NewReader("bukan multipart"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=batas")
+	rec := httptest.NewRecorder()
+	h.Submit(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d (%s), ingin 429 sebelum body diparse", rec.Code, rec.Body.String())
 	}
 	if sub.calls != 0 {
 		t.Error("Submit dipanggil padahal captcha gagal")

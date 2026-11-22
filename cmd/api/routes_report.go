@@ -9,7 +9,8 @@ import (
 
 // registerReportRoutes memasang endpoint pelaporan publik (M01). Endpoint ini
 // tidak memakai sesi; perlindungannya adalah rate limit, captcha, dan validasi
-// ketat di server.
+// ketat di server. Token captcha untuk submit dikirim lewat header
+// X-Captcha-Token agar dapat diverifikasi sebelum body multipart diparse.
 func registerReportRoutes(mux *http.ServeMux, deps Dependencies) {
 	svc := report.NewService(
 		deps.Pool,

@@ -235,6 +235,30 @@ func TestValidateCases(t *testing.T) {
 			fields: []string{"incidents[0].date_start"},
 		},
 		{
+			name: "tanggal akhir di masa depan",
+			mutate: func(r *report.SubmitRequest) {
+				r.Incidents[0].DateStart = "2026-09-15"
+				r.Incidents[0].DateEnd = "2026-12-01"
+			},
+			fields: []string{"incidents[0].date_end"},
+		},
+		{
+			name: "tanggal mulai hari ini diperbolehkan",
+			mutate: func(r *report.SubmitRequest) {
+				r.Incidents[0].DateStart = "2026-11-21"
+				r.Incidents[0].DateEnd = ""
+			},
+			fields: nil,
+		},
+		{
+			name: "tanggal akhir hari ini diperbolehkan",
+			mutate: func(r *report.SubmitRequest) {
+				r.Incidents[0].DateStart = "2026-11-20"
+				r.Incidents[0].DateEnd = "2026-11-21"
+			},
+			fields: nil,
+		},
+		{
 			name: "lokasi kosong",
 			mutate: func(r *report.SubmitRequest) {
 				r.Incidents[0].Location = "   "
