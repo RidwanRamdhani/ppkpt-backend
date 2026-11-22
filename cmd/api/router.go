@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/auth"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/config"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/evidence"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
@@ -23,6 +24,7 @@ type Dependencies struct {
 	Pool          *pgxpool.Pool
 	Logger        *slog.Logger
 	Audit         *audit.Service
+	Auth          *auth.Service
 	Evidence      *evidence.Service
 	Notifier      *notification.Service
 	Captcha       *captcha.Verifier
@@ -30,9 +32,9 @@ type Dependencies struct {
 	AuthLimiter   *ratelimit.Limiter
 }
 
-// NewRouter membangun http.Handler dengan seluruh middleware (urutan luar->dalam)
-// dan route dasar. Route fitur (report/cases/auth) ditambahkan pada Phase
-// berikutnya dan memakai layanan dari Dependencies.
+// NewRouter membangun http.Handler dengan seluruh middleware (urutan luar->dalam),
+// route dasar, dan route autentikasi. Route fitur (report/cases) ditambahkan pada
+// Phase berikutnya dan memakai layanan dari Dependencies.
 func NewRouter(deps Dependencies) http.Handler {
 	cfg := deps.Config
 	logger := deps.Logger
@@ -45,6 +47,17 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", healthHandler(deps.Pool))
+
+	// Autentikasi: login, logout, ganti password, dan /me. Login dan ganti
+	// password dibatasi AuthLimiter (per IP). Route fitur lain memakai
+	// deps.Auth.Protect(permission, handler) agar sesi dan hak akses diperiksa.
+	if deps.Auth != nil {
+		var authLimit func(http.Handler) http.Handler
+		if deps.AuthLimiter != nil {
+			authLimit = deps.AuthLimiter.Middleware
+		}
+		auth.NewHandler(deps.Auth).Register(mux, authLimit)
+	}
 
 	withResolver := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

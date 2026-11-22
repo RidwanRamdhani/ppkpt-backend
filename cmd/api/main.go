@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/auth"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/config"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/evidence"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
@@ -98,11 +99,21 @@ func run() int {
 	}
 
 	auditor := audit.NewService()
+
+	authSvc, err := auth.NewService(pool, auditor, logger, auth.OptionsFromConfig(cfg))
+	if err != nil {
+		logger.Error("konfigurasi autentikasi tidak valid", "err", err)
+		return 1
+	}
+	// Membersihkan sesi kedaluwarsa secara berkala; berhenti bersama ctx.
+	go authSvc.RunCleanup(ctx, 10*time.Minute)
+
 	deps := Dependencies{
 		Config: cfg,
 		Pool:   pool,
 		Logger: logger,
 		Audit:  auditor,
+		Auth:   authSvc,
 		Evidence: evidence.NewService(store, auditor, logger, evidence.Options{
 			MaxUploadBytes: cfg.MaxUploadBytes,
 			MaxFiles:       cfg.MaxFilesPerRequest,
