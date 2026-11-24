@@ -8,6 +8,7 @@ import (
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/db"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/review"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/workflow"
 	"github.com/jackc/pgx/v5"
 )
@@ -242,6 +243,14 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	if err != nil {
 		return nil, err
 	}
+	detail.ReviewNote, err = s.loadReviewNote(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	detail.Sessions, err = s.loadSessions(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
 	detail.StatusHistory, err = s.loadStatusHistory(ctx, reportID)
 	if err != nil {
 		return nil, err
@@ -254,6 +263,8 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	detail.IsPJ = isPJ
 	detail.CanTake = access.assignedTo == nil && access.status != string(workflow.Selesai)
 	detail.CanVerify = isPJ && access.status == string(workflow.Dilaporkan)
+	detail.CanReview = isPJ && access.status == string(workflow.Penelaahan)
+	detail.CanExamine = isPJ && access.status == string(workflow.Pemeriksaan)
 	return detail, nil
 }
 
@@ -576,6 +587,116 @@ func (s *Service) loadActionHistory(ctx context.Context, reportID int64) ([]hist
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("cases: iterasi riwayat aksi: %w", err)
+	}
+	return items, nil
+}
+
+const reviewNoteSQL = `
+SELECT COALESCE(rn.victim_identified, ''), COALESCE(rn.witness_identified, ''),
+       COALESCE(rn.initial_evidence_note, ''), rn.member_id, u.name, rn.created_at
+FROM review_notes rn
+JOIN users u ON u.id = rn.member_id
+WHERE rn.report_id = $1`
+
+func (s *Service) loadReviewNote(ctx context.Context, reportID int64) (*review.ReviewView, error) {
+	var view review.ReviewView
+	err := s.pool.QueryRow(ctx, reviewNoteSQL, reportID).Scan(
+		&view.VictimIdentified,
+		&view.WitnessIdentified,
+		&view.InitialEvidenceNote,
+		&view.Member.ID,
+		&view.Member.Name,
+		&view.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca catatan penelaahan: %w", err)
+	}
+	return &view, nil
+}
+
+const sessionsSQL = `
+SELECT s.id, s.examiner_id, u.name, s.session_date, COALESCE(s.summary, ''), s.created_at
+FROM examination_sessions s
+JOIN users u ON u.id = s.examiner_id
+WHERE s.report_id = $1
+ORDER BY s.session_date, s.id`
+
+const sessionParticipantsByReportSQL = `
+SELECT sp.session_id, sp.party_id, sp.role, p.party_type, COALESCE(p.name, '')
+FROM session_participants sp
+JOIN examination_sessions s ON s.id = sp.session_id
+JOIN parties p ON p.id = sp.party_id
+WHERE s.report_id = $1
+ORDER BY sp.session_id, sp.party_id`
+
+func (s *Service) loadSessions(ctx context.Context, reportID int64) ([]review.SessionView, error) {
+	rows, err := s.pool.Query(ctx, sessionsSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca sesi pemeriksaan: %w", err)
+	}
+
+	items := make([]review.SessionView, 0, 4)
+	index := make(map[int64]int, 4)
+	for rows.Next() {
+		var (
+			view review.SessionView
+			date time.Time
+		)
+		if err := rows.Scan(
+			&view.ID,
+			&view.Examiner.ID,
+			&view.Examiner.Name,
+			&date,
+			&view.Summary,
+			&view.CreatedAt,
+		); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("cases: baca sesi pemeriksaan: %w", err)
+		}
+		view.SessionDate = date.Format("2006-01-02")
+		view.Participants = []review.SessionParticipantView{}
+		index[view.ID] = len(items)
+		items = append(items, view)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("cases: iterasi sesi pemeriksaan: %w", err)
+	}
+	rows.Close()
+
+	if len(items) == 0 {
+		return items, nil
+	}
+
+	participantRows, err := s.pool.Query(ctx, sessionParticipantsByReportSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca peserta sesi: %w", err)
+	}
+	defer participantRows.Close()
+
+	for participantRows.Next() {
+		var (
+			sessionID   int64
+			participant review.SessionParticipantView
+		)
+		if err := participantRows.Scan(
+			&sessionID,
+			&participant.PartyID,
+			&participant.Role,
+			&participant.PartyType,
+			&participant.PartyName,
+		); err != nil {
+			return nil, fmt.Errorf("cases: baca peserta sesi: %w", err)
+		}
+		if position, ok := index[sessionID]; ok {
+			items[position].Participants = append(items[position].Participants, participant)
+		}
+	}
+	if err := participantRows.Err(); err != nil {
+		return nil, fmt.Errorf("cases: iterasi peserta sesi: %w", err)
 	}
 	return items, nil
 }

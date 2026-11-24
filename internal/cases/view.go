@@ -1,6 +1,10 @@
 package cases
 
-import "time"
+import (
+	"time"
+
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/review"
+)
 
 // Assignee adalah petugas Satgas yang menjadi penanggung jawab kasus. Hanya
 // berisi identitas petugas, bukan pihak kasus.
@@ -176,11 +180,15 @@ type SatgasDetail struct {
 	Incidents             []IncidentView      `json:"incidents"`
 	Evidences             []EvidenceView      `json:"evidences"`
 	Verifications         []VerificationView  `json:"verifications"`
+	ReviewNote            *review.ReviewView  `json:"review_note"`
+	Sessions              []review.SessionView `json:"sessions"`
 	StatusHistory         []StatusHistoryView `json:"status_history"`
 	Conclusion            *ConclusionSummary  `json:"conclusion"`
 	IsPJ                  bool                `json:"is_pj"`
 	CanTake               bool                `json:"can_take"`
 	CanVerify             bool                `json:"can_verify"`
+	CanReview             bool                `json:"can_review"`
+	CanExamine            bool                `json:"can_examine"`
 }
 
 // OfficialDetail adalah respons detail kasus untuk Pejabat. Hanya tersedia
