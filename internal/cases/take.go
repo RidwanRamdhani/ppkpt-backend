@@ -84,3 +84,20 @@ func (s *Service) takeConflict(ctx context.Context, tx pgx.Tx, reportID int64) e
 	}
 	return httpx.ErrConflict("Kasus tidak dapat diambil saat ini.")
 }
+
+// requireAssignee memastikan pemanggil adalah PJ kasus dan kasus belum selesai.
+// Dipakai endpoint tulis yang hanya boleh dilakukan oleh PJ (verifikasi dan
+// pengelolaan pihak).
+func (s *Service) requireAssignee(ctx context.Context, q db.DBTX, reportID, userID int64) (accessInfo, error) {
+	info, err := s.loadAccessWith(ctx, q, reportID)
+	if err != nil {
+		return accessInfo{}, err
+	}
+	if info.status == string(workflow.Selesai) {
+		return accessInfo{}, httpx.ErrConflict("Kasus sudah selesai dan tidak dapat diubah.")
+	}
+	if info.assignedTo == nil || *info.assignedTo != userID {
+		return accessInfo{}, httpx.ErrForbidden()
+	}
+	return info, nil
+}

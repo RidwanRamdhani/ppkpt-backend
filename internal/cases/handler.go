@@ -33,6 +33,9 @@ type Backend interface {
 	History(ctx context.Context, actor Actor, reportID int64) (HistoryResponse, error)
 	CreateManual(ctx context.Context, actor Actor, req ManualRequest, files []*multipart.FileHeader, ip string) (CreateResult, error)
 	Take(ctx context.Context, actor Actor, reportID int64, ip string) (TakeResult, error)
+	Verify(ctx context.Context, actor Actor, reportID int64, req VerificationRequest, ip string) (VerificationResult, error)
+	AddParty(ctx context.Context, actor Actor, reportID int64, input PartyInput, ip string) (PartyView, error)
+	UpdateParty(ctx context.Context, actor Actor, reportID, partyID int64, input PartyUpdate, ip string) (PartyView, error)
 }
 
 // Handler melayani endpoint kasus: daftar, detail, riwayat, input manual, dan
@@ -171,6 +174,88 @@ func (h *Handler) Take(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
+// Verify menangani POST /api/cases/{id}/verification.
+func (h *Handler) Verify(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFrom(r)
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized())
+		return
+	}
+	reportID, ok := pathReportID(w, r)
+	if !ok {
+		return
+	}
+
+	var req VerificationRequest
+	if err := httpx.ReadJSON(w, r, &req); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	result, err := h.backend.Verify(r.Context(), actor, reportID, req, clientIP(r))
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, result)
+}
+
+// AddParty menangani POST /api/cases/{id}/parties.
+func (h *Handler) AddParty(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFrom(r)
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized())
+		return
+	}
+	reportID, ok := pathReportID(w, r)
+	if !ok {
+		return
+	}
+
+	var input PartyInput
+	if err := httpx.ReadJSON(w, r, &input); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	party, err := h.backend.AddParty(r.Context(), actor, reportID, input, clientIP(r))
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusCreated, party)
+}
+
+// UpdateParty menangani PUT /api/cases/{id}/parties/{partyId}.
+func (h *Handler) UpdateParty(w http.ResponseWriter, r *http.Request) {
+	actor, ok := actorFrom(r)
+	if !ok {
+		httpx.WriteError(w, httpx.ErrUnauthorized())
+		return
+	}
+	reportID, ok := pathReportID(w, r)
+	if !ok {
+		return
+	}
+	partyID, ok := pathPartyID(w, r)
+	if !ok {
+		return
+	}
+
+	var input PartyUpdate
+	if err := httpx.ReadJSON(w, r, &input); err != nil {
+		httpx.WriteError(w, err)
+		return
+	}
+
+	party, err := h.backend.UpdateParty(r.Context(), actor, reportID, partyID, input, clientIP(r))
+	if err != nil {
+		h.writeServiceError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, party)
+}
+
 // actorFrom mengambil identitas petugas dari context. Middleware auth sudah
 // memastikan principal ada; pemeriksaan ulang mencegah handler dipakai tanpa
 // middleware.
@@ -185,7 +270,16 @@ func actorFrom(r *http.Request) (Actor, bool) {
 // pathReportID memvalidasi {id}. ID yang tidak valid diperlakukan sebagai data
 // tidak ditemukan agar tidak membocorkan detail parsing.
 func pathReportID(w http.ResponseWriter, r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	return pathID(w, r, "id")
+}
+
+// pathPartyID memvalidasi {partyId} pada path pihak.
+func pathPartyID(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	return pathID(w, r, "partyId")
+}
+
+func pathID(w http.ResponseWriter, r *http.Request, name string) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue(name), 10, 64)
 	if err != nil || id <= 0 {
 		httpx.WriteError(w, httpx.ErrNotFound())
 		return 0, false

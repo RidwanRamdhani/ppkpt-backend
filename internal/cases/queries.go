@@ -55,15 +55,18 @@ type listRow struct {
 // accessInfo adalah data minimum untuk memutuskan boleh-tidaknya membaca
 // detail/riwayat dan menyusun flag UI.
 type accessInfo struct {
+	caseNumber          string
+	reporterEmail       string
 	status              string
 	assignedTo          *int64
 	conclusionSubmitted bool
 }
 
 const accessSQL = `
-SELECT r.id, r.status, r.assigned_to,
+SELECT r.id, r.case_number, COALESCE(rp.email, ''), r.status, r.assigned_to,
        COALESCE(c.submission_status = 'DIAJUKAN', FALSE)
 FROM reports r
+LEFT JOIN reporters rp ON rp.report_id = r.id
 LEFT JOIN conclusions c ON c.report_id = r.id
 WHERE r.id = $1`
 
@@ -77,7 +80,7 @@ func (s *Service) loadAccessWith(ctx context.Context, q db.DBTX, reportID int64)
 		id   int64
 	)
 	err := q.QueryRow(ctx, accessSQL, reportID).
-		Scan(&id, &info.status, &info.assignedTo, &info.conclusionSubmitted)
+		Scan(&id, &info.caseNumber, &info.reporterEmail, &info.status, &info.assignedTo, &info.conclusionSubmitted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return accessInfo{}, httpx.ErrNotFound()
 	}

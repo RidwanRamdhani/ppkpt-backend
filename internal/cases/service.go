@@ -34,11 +34,13 @@ type Actor struct {
 	Role   string
 }
 
-// Options mengatur ambang peringatan tenggat dan biaya hash PIN. Nilai <= 0
-// diganti default.
+// Options mengatur ambang peringatan tenggat, tenggat tahap, dan biaya hash
+// PIN. Nilai <= 0 diganti default.
 type Options struct {
 	WarnReviewDays int
 	WarnExamDays   int
+	ReviewDueDays  int
+	ExamDueDays    int
 	BcryptCost     int
 }
 
@@ -49,6 +51,7 @@ type Service struct {
 	evidence       *evidence.Service
 	audit          *audit.Service
 	notifier       *notification.Service
+	flow           *workflow.Service
 	logger         *slog.Logger
 	warnReviewDays int
 	warnExamDays   int
@@ -83,10 +86,14 @@ func NewService(
 		cost = bcrypt.DefaultCost
 	}
 	return &Service{
-		pool:           pool,
-		evidence:       evidenceSvc,
-		audit:          auditor,
-		notifier:       notifier,
+		pool:     pool,
+		evidence: evidenceSvc,
+		audit:    auditor,
+		notifier: notifier,
+		flow: workflow.NewService(auditor, workflow.Options{
+			ReviewDueDays: opts.ReviewDueDays,
+			ExamDueDays:   opts.ExamDueDays,
+		}),
 		logger:         logger,
 		warnReviewDays: opts.WarnReviewDays,
 		warnExamDays:   opts.WarnExamDays,

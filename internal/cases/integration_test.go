@@ -76,7 +76,11 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 		prefix: prefix,
 		svc: cases.NewService(pool, nil, audit.NewService(), nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)),
-			cases.Options{WarnReviewDays: 2, WarnExamDays: 7, BcryptCost: bcrypt.MinCost}),
+			cases.Options{
+				WarnReviewDays: 2, WarnExamDays: 7,
+				ReviewDueDays: 7, ExamDueDays: 30,
+				BcryptCost: bcrypt.MinCost,
+			}),
 	}
 	env.satgasA = env.user(auth.RoleSatgas, "satgas_a")
 	env.satgasB = env.user(auth.RoleSatgas, "satgas_b")
@@ -432,6 +436,230 @@ func TestIntegrasiTakeKonflik(t *testing.T) {
 	closed := e.report(reportSeed{suffix: "32", status: "SELESAI", violation: "FISIK"})
 	_, err = e.svc.Take(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, closed, "")
 	appErrStatus(t, err, 409)
+}
+
+func TestIntegrasiVerifikasi(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+	satgasA := cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}
+
+	t.Run("LENGKAP memindahkan ke penelaahan dan memasang tenggat", func(t *testing.T) {
+		reportID := e.report(reportSeed{
+			suffix: "41", status: "DILAPORKAN", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+
+		result, err := e.svc.Verify(ctx, satgasA, reportID,
+			cases.VerificationRequest{Result: "LENGKAP"}, "203.0.113.9")
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if result.Status != "PENELAAHAN" || result.Result != "LENGKAP" {
+			t.Fatalf("hasil = %+v", result)
+		}
+
+		var (
+			status     string
+			started    *time.Time
+			due        *time.Time
+			verifyNote *string
+		)
+		err = e.pool.QueryRow(ctx, `
+			SELECT r.status, r.review_started_at, r.review_due_at,
+			       (SELECT note_for_reporter FROM verifications v
+			        WHERE v.report_id = r.id ORDER BY v.id DESC LIMIT 1)
+			FROM reports r WHERE r.id = $1`, reportID).Scan(&status, &started, &due, &verifyNote)
+		if err != nil {
+			t.Fatalf("baca status: %v", err)
+		}
+		if status != "PENELAAHAN" || started == nil || due == nil {
+			t.Fatalf("status/tenggat = %q %v %v", status, started, due)
+		}
+		if due.Sub(*started) != 7*24*time.Hour {
+			t.Errorf("tenggat = %v, ingin 7 hari", due.Sub(*started))
+		}
+		if verifyNote != nil {
+			t.Errorf("note_for_reporter = %v, ingin NULL", verifyNote)
+		}
+
+		var audits int
+		if err := e.pool.QueryRow(ctx, `
+			SELECT count(*) FROM audit_logs
+			WHERE action = 'VERIFICATION_RECORDED' AND entity = 'report' AND entity_id = $1`,
+			reportID).Scan(&audits); err != nil {
+			t.Fatalf("hitung audit: %v", err)
+		}
+		if audits != 1 {
+			t.Errorf("audit VERIFICATION_RECORDED = %d, ingin 1", audits)
+		}
+	})
+
+	t.Run("PERLU_DILENGKAPI menyimpan catatan dan menolak verifikasi kedua", func(t *testing.T) {
+		reportID := e.report(reportSeed{
+			suffix: "42", status: "DILAPORKAN", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+
+		result, err := e.svc.Verify(ctx, satgasA, reportID,
+			cases.VerificationRequest{Result: "PERLU_DILENGKAPI", NoteForReporter: "Lengkapi bukti."}, "")
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if result.Status != "PERLU_DILENGKAPI" {
+			t.Fatalf("status = %q", result.Status)
+		}
+
+		var note string
+		if err := e.pool.QueryRow(ctx, `
+			SELECT note_for_reporter FROM verifications
+			WHERE report_id = $1 ORDER BY id DESC LIMIT 1`, reportID).Scan(&note); err != nil {
+			t.Fatalf("baca catatan: %v", err)
+		}
+		if note != "Lengkapi bukti." {
+			t.Errorf("catatan = %q", note)
+		}
+
+		_, err = e.svc.Verify(ctx, satgasA, reportID,
+			cases.VerificationRequest{Result: "LENGKAP"}, "")
+		appErrStatus(t, err, 409)
+	})
+
+	t.Run("bukan PJ dan kasus selesai ditolak", func(t *testing.T) {
+		otherPJ := e.report(reportSeed{
+			suffix: "43", status: "DILAPORKAN", assigned: int64Ptr(e.satgasB), violation: "FISIK",
+		})
+		_, err := e.svc.Verify(ctx, satgasA, otherPJ,
+			cases.VerificationRequest{Result: "LENGKAP"}, "")
+		appErrStatus(t, err, 403)
+
+		closed := e.report(reportSeed{
+			suffix: "44", status: "SELESAI", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+		_, err = e.svc.Verify(ctx, satgasA, closed,
+			cases.VerificationRequest{Result: "LENGKAP"}, "")
+		appErrStatus(t, err, 409)
+	})
+
+	t.Run("validasi hasil dan catatan", func(t *testing.T) {
+		reportID := e.report(reportSeed{
+			suffix: "45", status: "DILAPORKAN", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+		_, err := e.svc.Verify(ctx, satgasA, reportID,
+			cases.VerificationRequest{Result: "PERLU_DILENGKAPI"}, "")
+		appErr := appErrorOf(t, err)
+		if appErr.Status != 422 || appErr.Fields["note_for_reporter"] == "" {
+			t.Fatalf("error = %+v, ingin 422 note_for_reporter", appErr)
+		}
+	})
+}
+
+func TestIntegrasiPihak(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+	satgasA := cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}
+
+	reportID := e.report(reportSeed{
+		suffix: "51", status: "PENELAAHAN", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+	})
+
+	party, err := e.svc.AddParty(ctx, satgasA, reportID, cases.PartyInput{
+		PartyType:       "SAKSI",
+		Name:            "Saksi Uji",
+		Gender:          "PEREMPUAN",
+		Category:        "MAHASISWA",
+		Institution:     "Telkom University",
+		RelationToOther: "teman sekelas",
+	}, "203.0.113.9")
+	if err != nil {
+		t.Fatalf("AddParty: %v", err)
+	}
+	if party.ID <= 0 || party.PartyType != "SAKSI" || party.Name != "Saksi Uji" {
+		t.Fatalf("party = %+v", party)
+	}
+
+	var (
+		addedBy *int64
+		name    string
+	)
+	if err := e.pool.QueryRow(ctx, `
+		SELECT added_by, name FROM parties WHERE id = $1`, party.ID).Scan(&addedBy, &name); err != nil {
+		t.Fatalf("baca pihak: %v", err)
+	}
+	if addedBy == nil || *addedBy != e.satgasA || name != "Saksi Uji" {
+		t.Errorf("pihak tersimpan salah: added_by=%v name=%q", addedBy, name)
+	}
+
+	updated, err := e.svc.UpdateParty(ctx, satgasA, reportID, party.ID, cases.PartyUpdate{
+		Name:    strPtr("Saksi Diperbarui"),
+		Faculty: strPtr("FRI"),
+	}, "")
+	if err != nil {
+		t.Fatalf("UpdateParty: %v", err)
+	}
+	if updated.Name != "Saksi Diperbarui" || updated.Faculty != "FRI" {
+		t.Fatalf("hasil update = %+v", updated)
+	}
+
+	var audits int
+	if err := e.pool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_logs
+		WHERE action IN ('PARTY_ADDED','PARTY_UPDATED') AND entity = 'report'
+		  AND entity_id = $1`, reportID).Scan(&audits); err != nil {
+		t.Fatalf("hitung audit: %v", err)
+	}
+	if audits != 2 {
+		t.Errorf("audit pihak = %d, ingin 2", audits)
+	}
+
+	history, err := e.svc.History(ctx, satgasA, reportID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	var foundAdded, foundUpdated bool
+	for _, item := range history.Items {
+		switch item.Title {
+		case "Pihak ditambahkan":
+			foundAdded = true
+		case "Data pihak diperbarui":
+			foundUpdated = true
+		}
+	}
+	if !foundAdded || !foundUpdated {
+		t.Errorf("riwayat pihak tidak lengkap: %+v", history.Items)
+	}
+
+	t.Run("pihak kasus lain tidak dapat diubah", func(t *testing.T) {
+		otherReport := e.report(reportSeed{
+			suffix: "52", status: "PENELAAHAN", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+		otherParty, err := e.svc.AddParty(ctx, satgasA, otherReport, cases.PartyInput{
+			PartyType: "AHLI", Name: "Ahli Lain",
+		}, "")
+		if err != nil {
+			t.Fatalf("AddParty lain: %v", err)
+		}
+
+		_, err = e.svc.UpdateParty(ctx, satgasA, reportID, otherParty.ID, cases.PartyUpdate{
+			Name: strPtr("Coba IDOR"),
+		}, "")
+		appErrStatus(t, err, 404)
+	})
+
+	t.Run("kasus selesai dan bukan PJ ditolak", func(t *testing.T) {
+		closed := e.report(reportSeed{
+			suffix: "53", status: "SELESAI", assigned: int64Ptr(e.satgasA), violation: "FISIK",
+		})
+		_, err := e.svc.AddParty(ctx, satgasA, closed, cases.PartyInput{
+			PartyType: "SAKSI", Name: "Saksi Tutup",
+		}, "")
+		appErrStatus(t, err, 409)
+
+		otherPJ := e.report(reportSeed{
+			suffix: "54", status: "PENELAAHAN", assigned: int64Ptr(e.satgasB), violation: "FISIK",
+		})
+		_, err = e.svc.AddParty(ctx, satgasA, otherPJ, cases.PartyInput{
+			PartyType: "SAKSI", Name: "Saksi Bukan PJ",
+		}, "")
+		appErrStatus(t, err, 403)
+	})
 }
 
 func TestIntegrasiDaftarKasus(t *testing.T) {

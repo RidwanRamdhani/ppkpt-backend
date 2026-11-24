@@ -18,6 +18,8 @@ func registerCaseRoutes(mux *http.ServeMux, deps Dependencies) {
 	svc := cases.NewService(deps.Pool, deps.Evidence, deps.Audit, deps.Notifier, deps.Logger, cases.Options{
 		WarnReviewDays: deps.Config.Deadline.WarnReviewDays,
 		WarnExamDays:   deps.Config.Deadline.WarnExamDays,
+		ReviewDueDays:  deps.Config.Deadline.ReviewDays,
+		ExamDueDays:    deps.Config.Deadline.ExamDays,
 		BcryptCost:     deps.Config.BcryptCost,
 	})
 	handler := cases.NewHandler(svc, deps.Logger, submitBodyLimit(deps.Config))
@@ -32,4 +34,10 @@ func registerCaseRoutes(mux *http.ServeMux, deps Dependencies) {
 		deps.Auth.Protect(auth.PermCaseView, http.HandlerFunc(handler.History)))
 	mux.Handle("POST /api/cases/{id}/take",
 		deps.Auth.Protect(auth.PermCaseTake, http.HandlerFunc(handler.Take)))
+	mux.Handle("POST /api/cases/{id}/verification",
+		deps.Auth.Protect(auth.PermCaseVerify, http.HandlerFunc(handler.Verify)))
+	mux.Handle("POST /api/cases/{id}/parties",
+		deps.Auth.Protect(auth.PermPartyWrite, http.HandlerFunc(handler.AddParty)))
+	mux.Handle("PUT /api/cases/{id}/parties/{partyId}",
+		deps.Auth.Protect(auth.PermPartyWrite, http.HandlerFunc(handler.UpdateParty)))
 }

@@ -158,7 +158,7 @@ func TestOptionsDefaults(t *testing.T) {
 
 // Matriks hak akses harus sama dengan Lampiran 9.2 SDD.
 func TestPermissionMatrix(t *testing.T) {
-	satgasOnly := []Permission{PermManualReportCreate, PermCaseTake, PermCaseVerify, PermCaseReview, PermCaseExamine,
+	satgasOnly := []Permission{PermManualReportCreate, PermCaseTake, PermCaseVerify, PermPartyWrite, PermCaseReview, PermCaseExamine,
 		PermCaseCondition, PermCaseReferral, PermCaseRecovery, PermConclusionWrite, PermConclusionSubmit,
 		PermDeliveryRecord, PermCaseClose}
 	pejabatOnly := []Permission{PermDecisionView, PermDecisionRecord, PermDecisionHistory}
@@ -204,7 +204,7 @@ func TestRequireSession_TanpaDanDenganCookieCacat(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/x", nil)
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "cacat"})
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "cacat"}) //nolint:gosec // cookie uji sengaja cacat
 	rec = serve(h, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("cookie cacat: status %d, mau 401", rec.Code)

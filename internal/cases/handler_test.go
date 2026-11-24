@@ -31,6 +31,15 @@ type fakeBackend struct {
 	createErr   error
 	takeID      int64
 	takeErr     error
+	verifyID    int64
+	verifyReq   VerificationRequest
+	verifyErr   error
+	partyInput  PartyInput
+	partyID     int64
+	partyErr    error
+	partyUpdate PartyUpdate
+	partyUpdID  int64
+	updateErr   error
 }
 
 func (f *fakeBackend) List(_ context.Context, actor Actor, filter Filter) (ListPage, error) {
@@ -71,6 +80,34 @@ func (f *fakeBackend) Take(_ context.Context, _ Actor, reportID int64, _ string)
 		return TakeResult{}, f.takeErr
 	}
 	return TakeResult{AssignedTo: Assignee{ID: 7, Name: "Satgas Uji"}}, nil
+}
+
+func (f *fakeBackend) Verify(_ context.Context, _ Actor, reportID int64, req VerificationRequest, _ string) (VerificationResult, error) {
+	f.verifyID = reportID
+	f.verifyReq = req
+	if f.verifyErr != nil {
+		return VerificationResult{}, f.verifyErr
+	}
+	return VerificationResult{ID: 1, Result: req.Result, Status: "PENELAAHAN"}, nil
+}
+
+func (f *fakeBackend) AddParty(_ context.Context, _ Actor, reportID int64, input PartyInput, _ string) (PartyView, error) {
+	f.partyID = reportID
+	f.partyInput = input
+	if f.partyErr != nil {
+		return PartyView{}, f.partyErr
+	}
+	return PartyView{ID: 5, PartyType: input.PartyType, Name: input.Name}, nil
+}
+
+func (f *fakeBackend) UpdateParty(_ context.Context, _ Actor, reportID, partyID int64, input PartyUpdate, _ string) (PartyView, error) {
+	f.partyID = reportID
+	f.partyUpdID = partyID
+	f.partyUpdate = input
+	if f.updateErr != nil {
+		return PartyView{}, f.updateErr
+	}
+	return PartyView{ID: partyID, Name: "Diperbarui"}, nil
 }
 
 func newTestHandler(backend Backend) *Handler {
@@ -338,5 +375,94 @@ func TestHandlerTakeKonflik(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("status = %d (%s), ingin 409", rec.Code, rec.Body.String())
+	}
+}
+
+func authenticatedJSONRequest(method, target, body string) *http.Request {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	principal := &auth.Principal{UserID: 7, Role: auth.RoleSatgas}
+	return req.WithContext(auth.WithPrincipal(req.Context(), principal))
+}
+
+func TestHandlerVerify(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	req := authenticatedJSONRequest(http.MethodPost, "/api/cases/15/verification",
+		`{"result":"PERLU_DILENGKAPI","note_for_reporter":"Lengkapi bukti."}`)
+	req.SetPathValue("id", "15")
+	rec := httptest.NewRecorder()
+
+	h.Verify(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), ingin 200", rec.Code, rec.Body.String())
+	}
+	if backend.verifyID != 15 || backend.verifyReq.Result != "PERLU_DILENGKAPI" {
+		t.Fatalf("payload verifikasi tidak diteruskan: id=%d req=%+v", backend.verifyID, backend.verifyReq)
+	}
+}
+
+func TestHandlerVerifyJSONTidakValid(t *testing.T) {
+	h := newTestHandler(&fakeBackend{})
+	req := authenticatedJSONRequest(http.MethodPost, "/api/cases/15/verification", `{"result":`)
+	req.SetPathValue("id", "15")
+	rec := httptest.NewRecorder()
+
+	h.Verify(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, ingin 422", rec.Code)
+	}
+}
+
+func TestHandlerAddParty(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	req := authenticatedJSONRequest(http.MethodPost, "/api/cases/15/parties",
+		`{"party_type":"SAKSI","name":"Saksi Uji"}`)
+	req.SetPathValue("id", "15")
+	rec := httptest.NewRecorder()
+
+	h.AddParty(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d (%s), ingin 201", rec.Code, rec.Body.String())
+	}
+	if backend.partyID != 15 || backend.partyInput.Name != "Saksi Uji" {
+		t.Fatalf("payload pihak tidak diteruskan: %+v", backend.partyInput)
+	}
+}
+
+func TestHandlerUpdateParty(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	req := authenticatedJSONRequest(http.MethodPut, "/api/cases/15/parties/22",
+		`{"name":"Nama Baru","faculty":"FRI"}`)
+	req.SetPathValue("id", "15")
+	req.SetPathValue("partyId", "22")
+	rec := httptest.NewRecorder()
+
+	h.UpdateParty(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), ingin 200", rec.Code, rec.Body.String())
+	}
+	if backend.partyUpdID != 22 || backend.partyUpdate.Name == nil || *backend.partyUpdate.Name != "Nama Baru" {
+		t.Fatalf("payload update tidak diteruskan: %+v", backend.partyUpdate)
+	}
+}
+
+func TestHandlerUpdatePartyIDTidakValid(t *testing.T) {
+	h := newTestHandler(&fakeBackend{})
+	req := authenticatedJSONRequest(http.MethodPut, "/api/cases/15/parties/abc", `{"name":"X"}`)
+	req.SetPathValue("id", "15")
+	req.SetPathValue("partyId", "abc")
+	rec := httptest.NewRecorder()
+
+	h.UpdateParty(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, ingin 404", rec.Code)
 	}
 }

@@ -45,7 +45,7 @@ func validTokenFormat(token string) bool {
 // sessionCookie membuat cookie sesi. Tanpa Max-Age/Expires sehingga cookie
 // hilang saat browser ditutup; masa berlaku sebenarnya dikendalikan server.
 func (s *Service) sessionCookie(token string) *http.Cookie {
-	return &http.Cookie{
+	return &http.Cookie{ //nolint:gosec // Secure mengikuti konfigurasi; HttpOnly dan SameSite selalu aktif
 		Name:     SessionCookieName,
 		Value:    token,
 		Path:     "/",
@@ -57,7 +57,7 @@ func (s *Service) sessionCookie(token string) *http.Cookie {
 
 // clearCookie membuat cookie yang menghapus cookie sesi di browser.
 func (s *Service) clearCookie() *http.Cookie {
-	return &http.Cookie{
+	return &http.Cookie{ //nolint:gosec // Secure mengikuti konfigurasi; HttpOnly dan SameSite selalu aktif
 		Name:     SessionCookieName,
 		Value:    "",
 		Path:     "/",
