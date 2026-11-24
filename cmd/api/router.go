@@ -49,6 +49,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	mux.HandleFunc("GET /api/health", healthHandler(deps.Pool))
 	registerReportRoutes(mux, deps)
 	registerCaseRoutes(mux, deps)
+	registerReviewRoutes(mux, deps)
 
 	// Autentikasi: login, logout, ganti password, dan /me. Login dan ganti
 	// password dibatasi AuthLimiter (per IP). Route fitur lain memakai

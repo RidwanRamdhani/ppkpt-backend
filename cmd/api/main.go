@@ -21,6 +21,7 @@ import (
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/mailer"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/ratelimit"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/storage"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/review"
 	"github.com/joho/godotenv"
 )
 
@@ -99,6 +100,14 @@ func run() int {
 	}
 
 	auditor := audit.NewService()
+
+	// Penjadwal tenggat harian (FR-32). Status tenggat tetap dihitung ulang saat
+	// data dibaca, jadi scheduler hanya menambah audit dan log.
+	scheduler := review.NewScheduler(pool, auditor, logger, review.SchedulerOptions{
+		WarnReviewDays: cfg.Deadline.WarnReviewDays,
+		WarnExamDays:   cfg.Deadline.WarnExamDays,
+	})
+	go scheduler.Run(ctx)
 
 	authSvc, err := auth.NewService(pool, auditor, logger, auth.OptionsFromConfig(cfg))
 	if err != nil {
