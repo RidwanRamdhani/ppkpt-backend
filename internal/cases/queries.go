@@ -327,12 +327,13 @@ func (s *Service) loadReporter(ctx context.Context, reportID int64) (*ReporterVi
 		view ReporterView
 		age  *int16
 	)
+	// Urutan target Scan wajib mengikuti reporterSQL: id_number sebelum category.
 	err := s.pool.QueryRow(ctx, reporterSQL, reportID).Scan(
 		&view.Name,
 		&age,
 		&view.Gender,
-		&view.Category,
 		&view.IDNumber,
+		&view.Category,
 		&view.Institution,
 		&view.Faculty,
 		&view.Program,

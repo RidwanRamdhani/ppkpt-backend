@@ -36,6 +36,9 @@ func TestMaskReporter(t *testing.T) {
 	if view.Age == nil || *view.Age != age {
 		t.Error("usia pelapor seharusnya tetap ada")
 	}
+	if view.Category != "MAHASISWA" {
+		t.Error("kategori pelapor seharusnya tetap ada")
+	}
 }
 
 func TestMaskReporterNilAman(t *testing.T) {
