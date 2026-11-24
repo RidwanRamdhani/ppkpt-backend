@@ -106,16 +106,17 @@ func (e *integrationEnv) user(role, label string) int64 {
 }
 
 type reportSeed struct {
-	suffix       string
-	status       string
-	condition    *string
-	assigned     *int64
-	confidential bool
-	reporterName string
-	violation    string
-	reviewDue    *time.Time
-	conclusion   bool
-	caseTaken    bool
+	suffix           string
+	status           string
+	condition        *string
+	assigned         *int64
+	confidential     bool
+	reporterName     string
+	reporterIDNumber string
+	violation        string
+	reviewDue        *time.Time
+	conclusion       bool
+	caseTaken        bool
 }
 
 func (e *integrationEnv) report(seed reportSeed) int64 {
@@ -141,10 +142,10 @@ func (e *integrationEnv) report(seed reportSeed) int64 {
 		reporterName = "Pelapor-" + e.prefix
 	}
 	if _, err := e.pool.Exec(ctx, `
-		INSERT INTO reporters (report_id, name, age, gender, category, institution, faculty, program, phone, email)
+		INSERT INTO reporters (report_id, name, age, gender, category, institution, faculty, program, phone, email, id_number)
 		VALUES ($1, $2, 21, 'PEREMPUAN', 'MAHASISWA', 'Telkom University', 'FRI', 'Informatika',
-		        '+628123456789', $3)`,
-		id, reporterName, "pelapor-"+e.prefix+"@test.local",
+		        '+628123456789', $3, NULLIF($4, ''))`,
+		id, reporterName, "pelapor-"+e.prefix+"@test.local", seed.reporterIDNumber,
 	); err != nil {
 		e.t.Fatalf("buat pelapor: %v", err)
 	}
@@ -809,14 +810,16 @@ func TestIntegrasiDetailKasus(t *testing.T) {
 	e := newIntegrationEnv(t)
 	ctx := context.Background()
 
+	nik := "NIK-" + e.prefix
 	confidential := e.report(reportSeed{
 		suffix: "11", status: "DILAPORKAN", assigned: int64Ptr(e.satgasA),
 		confidential: true, reporterName: "Rahasia-" + e.prefix,
-		violation: "PERUNDUNGAN", caseTaken: true,
+		reporterIDNumber: nik, violation: "PERUNDUNGAN", caseTaken: true,
 	})
 	submitted := e.report(reportSeed{
 		suffix: "12", status: "REKOMENDASI", assigned: int64Ptr(e.satgasA),
-		reporterName: "Pelapor-Umum-" + e.prefix, violation: "FISIK", conclusion: true,
+		reporterName: "Pelapor-Umum-" + e.prefix, reporterIDNumber: nik,
+		violation: "FISIK", conclusion: true,
 	})
 
 	t.Run("penyamaran pelapor untuk Satgas non-PJ", func(t *testing.T) {
@@ -830,6 +833,12 @@ func TestIntegrasiDetailKasus(t *testing.T) {
 		}
 		if detail.Reporter.Name != "Dirahasiakan" || detail.Reporter.Phone != "" || detail.Reporter.Email != "" {
 			t.Errorf("identitas masih bocor: %+v", detail.Reporter)
+		}
+		if detail.Reporter.IDNumber != "" {
+			t.Errorf("NIK pelapor masih terbaca saat disamarkan: %q", detail.Reporter.IDNumber)
+		}
+		if detail.Reporter.Category != "MAHASISWA" {
+			t.Errorf("kategori pelapor seharusnya tetap ada: %q", detail.Reporter.Category)
 		}
 		if detail.IsPJ {
 			t.Error("Satgas non-PJ tidak boleh ditandai PJ")
@@ -845,6 +854,9 @@ func TestIntegrasiDetailKasus(t *testing.T) {
 		if strings.Contains(string(raw), `"stored_name"`) || strings.Contains(string(raw), e.prefix+"-11") {
 			t.Error("object key bukti tidak boleh dikirim ke klien")
 		}
+		if strings.Contains(string(raw), nik) {
+			t.Error("NIK pelapor rahasia tidak boleh muncul di respons")
+		}
 	})
 
 	t.Run("PJ melihat identitas lengkap", func(t *testing.T) {
@@ -858,6 +870,12 @@ func TestIntegrasiDetailKasus(t *testing.T) {
 		}
 		if detail.Reporter.Name != "Rahasia-"+e.prefix {
 			t.Errorf("nama pelapor = %q", detail.Reporter.Name)
+		}
+		if detail.Reporter.IDNumber != nik {
+			t.Errorf("NIK pelapor = %q, ingin %q", detail.Reporter.IDNumber, nik)
+		}
+		if detail.Reporter.Category != "MAHASISWA" {
+			t.Errorf("kategori pelapor = %q, ingin MAHASISWA", detail.Reporter.Category)
 		}
 		if !detail.IsPJ || !detail.CanVerify {
 			t.Errorf("flag PJ/verifikasi salah: is_pj=%v can_verify=%v", detail.IsPJ, detail.CanVerify)
