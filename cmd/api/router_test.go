@@ -180,6 +180,23 @@ func TestCompleteRouteTerdaftar(t *testing.T) {
 	}
 }
 
+// TestCaseRoutesTerdaftarDanTerlindungi memastikan route baca kasus terpasang
+// dan berhenti di middleware sesi (401), bukan 404/405.
+func TestCaseRoutesTerdaftarDanTerlindungi(t *testing.T) {
+	h := newTestRouter(t, true, nil)
+
+	for _, path := range []string{"/api/cases", "/api/cases/1", "/api/cases/1/history"} {
+		rec := send(h, http.MethodGet, path, "", "")
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+			t.Errorf("route GET %s tidak terdaftar (status %d)", path, rec.Code)
+			continue
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s tanpa sesi: %d, mau 401", path, rec.Code)
+		}
+	}
+}
+
 func TestSubmitBodyLimit(t *testing.T) {
 	cfg := config.Config{MaxUploadBytes: 10 << 20, MaxFilesPerRequest: 10}
 	want := int64(10<<20)*10 + (1 << 20)

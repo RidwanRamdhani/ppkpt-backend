@@ -1,6 +1,9 @@
 -include .env
 export
 
+# Perintah Go dapat dioverride: make test GO="C:/Go/bin/go.exe"
+GO ?= go
+
 # GNU Make di Windows tidak selalu menemukan sh.exe meski Git/MSYS terpasang,
 # sehingga resep POSIX bisa gagal tanpa pesan. Pilih sh yang tersedia.
 ifeq ($(OS),Windows_NT)
@@ -43,7 +46,7 @@ test:
 
 # Memerlukan database yang sudah dimigrasi dan .env berisi DATABASE_URL.
 test-integration:
-	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/auth ./internal/report ./internal/workflow -count=1
+	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/auth ./internal/cases ./internal/report ./internal/workflow -count=1
 
 # Uji end-to-end modul autentikasi terhadap API sungguhan (curl). Butuh database
 # yang sudah dimigrasi; API dijalankan otomatis bila belum berjalan.
