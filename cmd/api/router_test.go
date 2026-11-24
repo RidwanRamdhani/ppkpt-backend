@@ -180,19 +180,29 @@ func TestCompleteRouteTerdaftar(t *testing.T) {
 	}
 }
 
-// TestCaseRoutesTerdaftarDanTerlindungi memastikan route baca kasus terpasang
-// dan berhenti di middleware sesi (401), bukan 404/405.
+// TestCaseRoutesTerdaftarDanTerlindungi memastikan route kasus terpasang dan
+// berhenti di middleware sesi (401), bukan 404/405.
 func TestCaseRoutesTerdaftarDanTerlindungi(t *testing.T) {
 	h := newTestRouter(t, true, nil)
 
-	for _, path := range []string{"/api/cases", "/api/cases/1", "/api/cases/1/history"} {
-		rec := send(h, http.MethodGet, path, "", "")
+	routes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/api/cases"},
+		{http.MethodPost, "/api/cases"},
+		{http.MethodGet, "/api/cases/1"},
+		{http.MethodGet, "/api/cases/1/history"},
+		{http.MethodPost, "/api/cases/1/take"},
+	}
+	for _, route := range routes {
+		rec := send(h, route.method, route.path, "", "")
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
-			t.Errorf("route GET %s tidak terdaftar (status %d)", path, rec.Code)
+			t.Errorf("route %s %s tidak terdaftar (status %d)", route.method, route.path, rec.Code)
 			continue
 		}
 		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("GET %s tanpa sesi: %d, mau 401", path, rec.Code)
+			t.Errorf("%s %s tanpa sesi: %d, mau 401", route.method, route.path, rec.Code)
 		}
 	}
 }

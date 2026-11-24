@@ -15,16 +15,21 @@ func registerCaseRoutes(mux *http.ServeMux, deps Dependencies) {
 		return
 	}
 
-	svc := cases.NewService(deps.Pool, deps.Audit, deps.Logger, cases.Options{
+	svc := cases.NewService(deps.Pool, deps.Evidence, deps.Audit, deps.Notifier, deps.Logger, cases.Options{
 		WarnReviewDays: deps.Config.Deadline.WarnReviewDays,
 		WarnExamDays:   deps.Config.Deadline.WarnExamDays,
+		BcryptCost:     deps.Config.BcryptCost,
 	})
-	handler := cases.NewHandler(svc, deps.Logger)
+	handler := cases.NewHandler(svc, deps.Logger, submitBodyLimit(deps.Config))
 
 	mux.Handle("GET /api/cases",
 		deps.Auth.Protect(auth.PermCaseList, http.HandlerFunc(handler.List)))
+	mux.Handle("POST /api/cases",
+		deps.Auth.Protect(auth.PermManualReportCreate, http.HandlerFunc(handler.CreateManual)))
 	mux.Handle("GET /api/cases/{id}",
 		deps.Auth.Protect(auth.PermCaseView, http.HandlerFunc(handler.Detail)))
 	mux.Handle("GET /api/cases/{id}/history",
 		deps.Auth.Protect(auth.PermCaseView, http.HandlerFunc(handler.History)))
+	mux.Handle("POST /api/cases/{id}/take",
+		deps.Auth.Protect(auth.PermCaseTake, http.HandlerFunc(handler.Take)))
 }

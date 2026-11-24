@@ -17,14 +17,18 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/auth"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/cases"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/deadline"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/report"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type integrationEnv struct {
@@ -70,9 +74,9 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 		t:      t,
 		pool:   pool,
 		prefix: prefix,
-		svc: cases.NewService(pool, audit.NewService(),
+		svc: cases.NewService(pool, nil, audit.NewService(), nil,
 			slog.New(slog.NewTextHandler(io.Discard, nil)),
-			cases.Options{WarnReviewDays: 2, WarnExamDays: 7}),
+			cases.Options{WarnReviewDays: 2, WarnExamDays: 7, BcryptCost: bcrypt.MinCost}),
 	}
 	env.satgasA = env.user(auth.RoleSatgas, "satgas_a")
 	env.satgasB = env.user(auth.RoleSatgas, "satgas_b")
@@ -217,6 +221,217 @@ func appErrStatus(t *testing.T, err error, want int) {
 	if appErr.Status != want {
 		t.Fatalf("status AppError = %d, ingin %d", appErr.Status, want)
 	}
+}
+
+func appErrorOf(t *testing.T, err error) *httpx.AppError {
+	t.Helper()
+	var appErr *httpx.AppError
+	if !errors.As(err, &appErr) {
+		t.Fatalf("error bukan AppError: %v", err)
+	}
+	return appErr
+}
+
+func TestIntegrasiInputManual(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+	now := time.Now()
+	age := 30
+
+	req := cases.ManualRequest{
+		SubmitRequest: report.SubmitRequest{
+			Reporter: report.ReporterInput{
+				Name:        "Pelapor Manual " + e.prefix,
+				Age:         &age,
+				Gender:      "PEREMPUAN",
+				Category:    "DOSEN",
+				Institution: "Telkom University",
+				Phone:       "081234567890",
+			},
+			ReporterIsVictim: true,
+			Accused: []report.PersonInput{{
+				Name: "Terlapor Manual " + e.prefix,
+			}},
+			Incidents: []report.IncidentRequest{{
+				DateStart:   now.AddDate(0, 0, -5).Format("2006-01-02"),
+				Location:    "Gedung A",
+				Description: "Kejadian input manual",
+			}},
+			ViolationTypes: []string{"PERUNDUNGAN"},
+			Chronology:     "Kronologi input manual.",
+		},
+		Channel:      "RUJUKAN",
+		ReferralUnit: "Layanan Psikologi",
+		ReceivedAt:   now.AddDate(0, 0, -1).Format("2006-01-02"),
+		OfficerNote:  "Catatan petugas uji.",
+		TakeCase:     true,
+	}
+
+	result, err := e.svc.CreateManual(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas},
+		req, nil, "203.0.113.9")
+	if err != nil {
+		t.Fatalf("CreateManual: %v", err)
+	}
+	if len(result.CaseNumber) != report.TicketDigits || len(result.PIN) != report.PINDigits {
+		t.Fatalf("kredensial tidak valid: %+v", result)
+	}
+
+	var (
+		id             int64
+		channel        string
+		status         string
+		enteredBy      *int64
+		assignedTo     *int64
+		receivedAt     *time.Time
+		additional     *string
+		consentAt      *time.Time
+		consentVersion *string
+		pinHash        string
+		reporterEmail  *string
+	)
+	err = e.pool.QueryRow(ctx, `
+		SELECT r.id, r.channel, r.status, r.entered_by, r.assigned_to,
+		       r.received_at, r.additional_description, r.consent_at,
+		       r.consent_text_version, r.pin_hash, rp.email
+		FROM reports r
+		JOIN reporters rp ON rp.report_id = r.id
+		WHERE r.case_number = $1`, result.CaseNumber).Scan(
+		&id, &channel, &status, &enteredBy, &assignedTo,
+		&receivedAt, &additional, &consentAt, &consentVersion, &pinHash, &reporterEmail,
+	)
+	if err != nil {
+		t.Fatalf("baca laporan manual: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := e.pool.Exec(context.Background(), `DELETE FROM reports WHERE id = $1`, id); err != nil {
+			t.Logf("bersihkan laporan manual gagal (abaikan): %v", err)
+		}
+	})
+
+	if channel != "RUJUKAN" || status != "DILAPORKAN" {
+		t.Errorf("channel/status = %q/%q", channel, status)
+	}
+	if enteredBy == nil || *enteredBy != e.satgasA {
+		t.Errorf("entered_by = %v", enteredBy)
+	}
+	if assignedTo == nil || *assignedTo != e.satgasA {
+		t.Errorf("assigned_to = %v, ingin %d (take_case)", assignedTo, e.satgasA)
+	}
+	if receivedAt == nil || receivedAt.In(deadline.Jakarta).Format("2006-01-02") != req.ReceivedAt {
+		t.Errorf("received_at = %v, ingin %s", receivedAt, req.ReceivedAt)
+	}
+	if additional == nil || !strings.Contains(*additional, "Catatan petugas uji.") ||
+		!strings.Contains(*additional, "[Petugas ") {
+		t.Errorf("additional_description = %v", additional)
+	}
+	if consentAt != nil || consentVersion != nil {
+		t.Errorf("consent manual seharusnya NULL: %v %v", consentAt, consentVersion)
+	}
+	if reporterEmail != nil {
+		t.Errorf("email pelapor = %v, ingin NULL", reporterEmail)
+	}
+	if pinHash == result.PIN {
+		t.Error("PIN tersimpan plaintext")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(pinHash), []byte(result.PIN)); err != nil {
+		t.Errorf("hash PIN tidak cocok: %v", err)
+	}
+
+	counts := []struct {
+		query string
+		want  int
+	}{
+		{`SELECT count(*) FROM parties WHERE report_id = $1`, 2},
+		{`SELECT count(*) FROM incidents WHERE report_id = $1`, 1},
+		{`SELECT count(*) FROM report_violation_types WHERE report_id = $1`, 1},
+		{`SELECT count(*) FROM status_history WHERE report_id = $1 AND from_status IS NULL AND to_status = 'DILAPORKAN'`, 1},
+		{`SELECT count(*) FROM audit_logs WHERE action = 'CASE_CREATED' AND entity = 'report' AND entity_id = $1`, 1},
+	}
+	for _, item := range counts {
+		var got int
+		if err := e.pool.QueryRow(ctx, item.query, id).Scan(&got); err != nil {
+			t.Fatalf("hitung %q: %v", item.query, err)
+		}
+		if got != item.want {
+			t.Errorf("%q = %d, ingin %d", item.query, got, item.want)
+		}
+	}
+}
+
+func TestIntegrasiTakeConcurrent(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+	reportID := e.report(reportSeed{suffix: "21", status: "DILAPORKAN", violation: "FISIK"})
+
+	actors := []cases.Actor{
+		{UserID: e.satgasA, Role: auth.RoleSatgas},
+		{UserID: e.satgasB, Role: auth.RoleSatgas},
+	}
+
+	const workers = 20
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := e.svc.Take(ctx, actors[i%len(actors)], reportID, "203.0.113.9")
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	var success, conflict int
+	for err := range errs {
+		if err == nil {
+			success++
+			continue
+		}
+		appErr := appErrorOf(t, err)
+		if appErr.Status == 409 {
+			conflict++
+		}
+	}
+	if success != 1 || conflict != workers-1 {
+		t.Fatalf("sukses=%d konflik=%d, ingin 1/%d", success, conflict, workers-1)
+	}
+
+	var assignedTo *int64
+	if err := e.pool.QueryRow(ctx, `SELECT assigned_to FROM reports WHERE id = $1`, reportID).Scan(&assignedTo); err != nil {
+		t.Fatalf("baca PJ: %v", err)
+	}
+	if assignedTo == nil || (*assignedTo != e.satgasA && *assignedTo != e.satgasB) {
+		t.Fatalf("assigned_to = %v", assignedTo)
+	}
+
+	var audits int
+	if err := e.pool.QueryRow(ctx, `
+		SELECT count(*) FROM audit_logs
+		WHERE action = 'CASE_TAKEN' AND entity = 'report' AND entity_id = $1`, reportID).Scan(&audits); err != nil {
+		t.Fatalf("hitung audit: %v", err)
+	}
+	if audits != 1 {
+		t.Errorf("audit CASE_TAKEN = %d, ingin 1", audits)
+	}
+}
+
+func TestIntegrasiTakeKonflik(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+
+	taken := e.report(reportSeed{
+		suffix: "31", status: "DILAPORKAN", assigned: int64Ptr(e.satgasB), violation: "FISIK",
+	})
+	_, err := e.svc.Take(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, taken, "")
+	appErr := appErrorOf(t, err)
+	if appErr.Status != 409 || appErr.Fields["pj_name"] == "" {
+		t.Fatalf("error = %+v, ingin 409 dengan pj_name", appErr)
+	}
+
+	closed := e.report(reportSeed{suffix: "32", status: "SELESAI", violation: "FISIK"})
+	_, err = e.svc.Take(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, closed, "")
+	appErrStatus(t, err, 409)
 }
 
 func TestIntegrasiDaftarKasus(t *testing.T) {

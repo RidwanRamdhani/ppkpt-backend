@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/db"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/workflow"
 	"github.com/jackc/pgx/v5"
@@ -67,11 +68,15 @@ LEFT JOIN conclusions c ON c.report_id = r.id
 WHERE r.id = $1`
 
 func (s *Service) loadAccess(ctx context.Context, reportID int64) (accessInfo, error) {
+	return s.loadAccessWith(ctx, s.pool, reportID)
+}
+
+func (s *Service) loadAccessWith(ctx context.Context, q db.DBTX, reportID int64) (accessInfo, error) {
 	var (
 		info accessInfo
 		id   int64
 	)
-	err := s.pool.QueryRow(ctx, accessSQL, reportID).
+	err := q.QueryRow(ctx, accessSQL, reportID).
 		Scan(&id, &info.status, &info.assignedTo, &info.conclusionSubmitted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return accessInfo{}, httpx.ErrNotFound()

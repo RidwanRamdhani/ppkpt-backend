@@ -153,16 +153,43 @@ var (
 	jakartaZone  = time.FixedZone("WIB", 7*60*60)
 )
 
-// Validate menormalkan dan memeriksa seluruh payload sekaligus. Semua kesalahan
-// dikumpulkan ke Fields agar frontend dapat menandai tiap isian (422).
+// ValidationOptions menentukan aturan yang berbeda antar kanal. Form portal
+// mewajibkan persetujuan dan email pelapor; input manual oleh Satgas tidak.
+type ValidationOptions struct {
+	RequireConsent       bool
+	RequireReporterEmail bool
+}
+
+// PortalValidation adalah aturan untuk POST /api/reports.
+var PortalValidation = ValidationOptions{
+	RequireConsent:       true,
+	RequireReporterEmail: true,
+}
+
+// ManualValidation adalah aturan untuk input manual oleh Satgas: tanpa
+// persetujuan digital dan email pelapor boleh kosong.
+var ManualValidation = ValidationOptions{
+	RequireConsent:       false,
+	RequireReporterEmail: false,
+}
+
+// Validate menormalkan dan memeriksa payload portal. Lihat ValidateWith untuk
+// aturan per kanal.
+func (r SubmitRequest) Validate(now time.Time) (Submission, *httpx.AppError) {
+	return r.ValidateWith(now, PortalValidation)
+}
+
+// ValidateWith menormalkan dan memeriksa payload dengan aturan yang diberikan.
+// Semua kesalahan dikumpulkan ke Fields agar frontend dapat menandai tiap
+// isian (422).
 //
 // now dipakai untuk menolak tanggal kejadian di masa depan; pemanggil
 // mengirimkannya agar mudah diuji.
 //
 // Catatan keputusan: field identitas yang tidak selalu dimiliki pelapor
 // (id_number, faculty, program) opsional di server; name, age, gender,
-// category, institution, phone, dan email wajib.
-func (r SubmitRequest) Validate(now time.Time) (Submission, *httpx.AppError) {
+// category, institution, phone, dan email wajib pada form portal.
+func (r SubmitRequest) ValidateWith(now time.Time, opts ValidationOptions) (Submission, *httpx.AppError) {
 	v := &validator{fields: make(map[string]string)}
 
 	sub := Submission{
@@ -180,7 +207,7 @@ func (r SubmitRequest) Validate(now time.Time) (Submission, *httpx.AppError) {
 		ConsentTextVersion:    strings.TrimSpace(r.ConsentTextVersion),
 	}
 
-	validateReporter(v, sub.Reporter)
+	validateReporter(v, sub.Reporter, opts)
 
 	if !sub.ReporterIsVictim {
 		if sub.Victim == nil {
@@ -231,11 +258,13 @@ func (r SubmitRequest) Validate(now time.Time) (Submission, *httpx.AppError) {
 	v.maxRunes("efforts_made", sub.EffortsMade, maxShortTextRunes)
 	v.maxRunes("expectation", sub.Expectation, maxShortTextRunes)
 
-	if !r.Consent {
-		v.add("consent", "Persetujuan wajib diberikan sebelum laporan dikirim.")
-	}
-	if _, ok := knownConsentVersions[sub.ConsentTextVersion]; !ok {
-		v.add("consent_text_version", "Versi teks persetujuan tidak dikenal.")
+	if opts.RequireConsent {
+		if !r.Consent {
+			v.add("consent", "Persetujuan wajib diberikan sebelum laporan dikirim.")
+		}
+		if _, ok := knownConsentVersions[sub.ConsentTextVersion]; !ok {
+			v.add("consent_text_version", "Versi teks persetujuan tidak dikenal.")
+		}
 	}
 
 	if len(v.fields) > 0 {
@@ -246,7 +275,7 @@ func (r SubmitRequest) Validate(now time.Time) (Submission, *httpx.AppError) {
 	return sub, nil
 }
 
-func validateReporter(v *validator, r ReporterInput) {
+func validateReporter(v *validator, r ReporterInput, opts ValidationOptions) {
 	v.required("reporter.name", r.Name)
 	v.maxRunes("reporter.name", r.Name, maxNameRunes)
 
@@ -278,7 +307,9 @@ func validateReporter(v *validator, r ReporterInput) {
 		v.add("reporter.phone", "Nomor kontak tidak valid.")
 	}
 
-	v.required("reporter.email", r.Email)
+	if opts.RequireReporterEmail {
+		v.required("reporter.email", r.Email)
+	}
 	v.maxRunes("reporter.email", r.Email, maxEmailRunes)
 	if r.Email != "" && !validEmail(r.Email) {
 		v.add("reporter.email", "Alamat email tidak valid.")

@@ -1,10 +1,12 @@
 package cases
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,15 +17,20 @@ import (
 )
 
 type fakeBackend struct {
-	listCalled bool
-	listActor  Actor
-	listFilter Filter
-	listResult ListPage
-	listErr    error
-	detailID   int64
-	detailErr  error
-	historyID  int64
-	historyErr error
+	listCalled  bool
+	listActor   Actor
+	listFilter  Filter
+	listResult  ListPage
+	listErr     error
+	detailID    int64
+	detailErr   error
+	historyID   int64
+	historyErr  error
+	createReq   ManualRequest
+	createFiles int
+	createErr   error
+	takeID      int64
+	takeErr     error
 }
 
 func (f *fakeBackend) List(_ context.Context, actor Actor, filter Filter) (ListPage, error) {
@@ -49,8 +56,25 @@ func (f *fakeBackend) History(_ context.Context, _ Actor, reportID int64) (Histo
 	return HistoryResponse{Items: []HistoryEntry{}}, nil
 }
 
+func (f *fakeBackend) CreateManual(_ context.Context, _ Actor, req ManualRequest, files []*multipart.FileHeader, _ string) (CreateResult, error) {
+	f.createReq = req
+	f.createFiles = len(files)
+	if f.createErr != nil {
+		return CreateResult{}, f.createErr
+	}
+	return CreateResult{CaseNumber: "12345678", PIN: "123456"}, nil
+}
+
+func (f *fakeBackend) Take(_ context.Context, _ Actor, reportID int64, _ string) (TakeResult, error) {
+	f.takeID = reportID
+	if f.takeErr != nil {
+		return TakeResult{}, f.takeErr
+	}
+	return TakeResult{AssignedTo: Assignee{ID: 7, Name: "Satgas Uji"}}, nil
+}
+
 func newTestHandler(backend Backend) *Handler {
-	return NewHandler(backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewHandler(backend, slog.New(slog.NewTextHandler(io.Discard, nil)), 0)
 }
 
 func authenticatedRequest(method, target string) *http.Request {
@@ -207,5 +231,112 @@ func TestPathReportIDMengembalikanErrorNotFound(t *testing.T) {
 	}
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, ingin 404", rec.Code)
+	}
+}
+
+// manualBody membuat body multipart dengan bagian payload.
+func manualBody(t *testing.T, payload string) (*bytes.Buffer, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	if err := writer.WriteField("payload", payload); err != nil {
+		t.Fatalf("tulis payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("tutup multipart: %v", err)
+	}
+	return &buf, writer.FormDataContentType()
+}
+
+func TestHandlerCreateManual(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	body, contentType := manualBody(t, `{"channel":"HOTLINE","reporter":{"name":"Pelapor"}}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cases", body)
+	req.Header.Set("Content-Type", contentType)
+	principal := &auth.Principal{UserID: 7, Role: auth.RoleSatgas}
+	req = req.WithContext(auth.WithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+
+	h.CreateManual(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d (%s), ingin 201", rec.Code, rec.Body.String())
+	}
+	if backend.createReq.Channel != "HOTLINE" || backend.createReq.Reporter.Name != "Pelapor" {
+		t.Fatalf("payload tidak diteruskan: %+v", backend.createReq)
+	}
+	if !strings.Contains(rec.Body.String(), `"case_number":"12345678"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestHandlerCreateManualPayloadTidakValid(t *testing.T) {
+	h := newTestHandler(&fakeBackend{})
+	body, contentType := manualBody(t, `bukan json`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cases", body)
+	req.Header.Set("Content-Type", contentType)
+	principal := &auth.Principal{UserID: 7, Role: auth.RoleSatgas}
+	req = req.WithContext(auth.WithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+
+	h.CreateManual(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d (%s), ingin 422", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"payload"`) {
+		t.Fatalf("body 422 tanpa field payload: %s", rec.Body.String())
+	}
+}
+
+func TestHandlerCreateManualMenolakFieldTakDikenal(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	body, contentType := manualBody(t, `{"channel":"HOTLINE","rahasia":true}`)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cases", body)
+	req.Header.Set("Content-Type", contentType)
+	principal := &auth.Principal{UserID: 7, Role: auth.RoleSatgas}
+	req = req.WithContext(auth.WithPrincipal(req.Context(), principal))
+	rec := httptest.NewRecorder()
+
+	h.CreateManual(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, ingin 422", rec.Code)
+	}
+}
+
+func TestHandlerTake(t *testing.T) {
+	backend := &fakeBackend{}
+	h := newTestHandler(backend)
+	req := authenticatedRequest(http.MethodPost, "/api/cases/12/take")
+	req.SetPathValue("id", "12")
+	rec := httptest.NewRecorder()
+
+	h.Take(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s), ingin 200", rec.Code, rec.Body.String())
+	}
+	if backend.takeID != 12 {
+		t.Fatalf("id = %d, ingin 12", backend.takeID)
+	}
+}
+
+func TestHandlerTakeKonflik(t *testing.T) {
+	backend := &fakeBackend{takeErr: httpx.ErrConflict("Kasus sudah diambil oleh petugas lain.")}
+	h := newTestHandler(backend)
+	req := authenticatedRequest(http.MethodPost, "/api/cases/12/take")
+	req.SetPathValue("id", "12")
+	rec := httptest.NewRecorder()
+
+	h.Take(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d (%s), ingin 409", rec.Code, rec.Body.String())
 	}
 }

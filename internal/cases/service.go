@@ -14,9 +14,12 @@ import (
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/audit"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/auth"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/deadline"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/evidence"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/notification"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/workflow"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -31,25 +34,38 @@ type Actor struct {
 	Role   string
 }
 
-// Options mengatur ambang peringatan tenggat. Nilai <= 0 diganti default.
+// Options mengatur ambang peringatan tenggat dan biaya hash PIN. Nilai <= 0
+// diganti default.
 type Options struct {
 	WarnReviewDays int
 	WarnExamDays   int
+	BcryptCost     int
 }
 
-// Service melayani pembacaan kasus. Pool wajib diisi untuk operasi database.
+// Service melayani pembacaan dan penulisan kasus. Pool wajib diisi untuk
+// operasi database.
 type Service struct {
 	pool           *pgxpool.Pool
+	evidence       *evidence.Service
 	audit          *audit.Service
+	notifier       *notification.Service
 	logger         *slog.Logger
 	warnReviewDays int
 	warnExamDays   int
+	bcryptCost     int
 	now            func() time.Time
 }
 
-// NewService membuat layanan kasus. auditor dan logger boleh nil agar mudah
-// diuji; di produksi keduanya selalu diisi.
-func NewService(pool *pgxpool.Pool, auditor *audit.Service, logger *slog.Logger, opts Options) *Service {
+// NewService membuat layanan kasus. evidence/auditor/notifier/logger boleh nil
+// agar mudah diuji; di produksi seluruhnya diisi.
+func NewService(
+	pool *pgxpool.Pool,
+	evidenceSvc *evidence.Service,
+	auditor *audit.Service,
+	notifier *notification.Service,
+	logger *slog.Logger,
+	opts Options,
+) *Service {
 	if auditor == nil {
 		auditor = audit.NewService()
 	}
@@ -62,12 +78,19 @@ func NewService(pool *pgxpool.Pool, auditor *audit.Service, logger *slog.Logger,
 	if opts.WarnExamDays <= 0 {
 		opts.WarnExamDays = defaultWarnExamDays
 	}
+	cost := opts.BcryptCost
+	if cost < bcrypt.MinCost || cost > bcrypt.MaxCost {
+		cost = bcrypt.DefaultCost
+	}
 	return &Service{
 		pool:           pool,
+		evidence:       evidenceSvc,
 		audit:          auditor,
+		notifier:       notifier,
 		logger:         logger,
 		warnReviewDays: opts.WarnReviewDays,
 		warnExamDays:   opts.WarnExamDays,
+		bcryptCost:     cost,
 		now:            time.Now,
 	}
 }
