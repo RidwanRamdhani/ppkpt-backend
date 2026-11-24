@@ -13,6 +13,7 @@ const (
 	PermCaseView           Permission = "case.view"
 	PermCaseTake           Permission = "case.take"
 	PermCaseVerify         Permission = "case.verify"
+	PermPartyWrite         Permission = "party.write"
 	PermCaseReview         Permission = "case.review"
 	PermCaseExamine        Permission = "case.examine"
 	PermCaseCondition      Permission = "case.condition"
@@ -35,6 +36,7 @@ var permissionMatrix = map[Permission][]string{
 	PermCaseView:           {RoleSatgas, RolePejabat}, // pejabat: hanya kasus yang diajukan
 	PermCaseTake:           {RoleSatgas},
 	PermCaseVerify:         {RoleSatgas},
+	PermPartyWrite:         {RoleSatgas},
 	PermCaseReview:         {RoleSatgas},
 	PermCaseExamine:        {RoleSatgas},
 	PermCaseCondition:      {RoleSatgas},

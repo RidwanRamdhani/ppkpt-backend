@@ -42,7 +42,7 @@ func TestPlan_TanpaEnvDanTanpaDemo(t *testing.T) {
 }
 
 func TestPlan_AkunAwalDariEnv(t *testing.T) {
-	a, err := plan(env(map[string]string{
+	a, err := plan(env(map[string]string{ //nolint:gosec // kredensial akun uji
 		"SEED_SATGAS_USERNAME": "satgas.utama", "SEED_SATGAS_EMAIL": "satgas@kampus.ac.id", "SEED_SATGAS_NAME": "Ketua",
 		"SEED_PEJABAT_USERNAME": "rektor", "SEED_PEJABAT_EMAIL": "rektor@kampus.ac.id", "SEED_PEJABAT_PASSWORD": "Sandi-Rektor-123",
 		"SEED_DEMO_PASSWORD": "tidak-dipakai-tanpa-demo",
@@ -78,7 +78,7 @@ func TestPlan_Demo(t *testing.T) {
 	if auth.ValidatePassword(defaultDemoPassword) != nil {
 		t.Fatal("password demo bawaan harus lolos kebijakan agar akun demo bisa dibuat")
 	}
-	a, _ = plan(env(map[string]string{"SEED_DEMO_PASSWORD": "Demo-Lain-2026"}), true)
+	a, _ = plan(env(map[string]string{"SEED_DEMO_PASSWORD": "Demo-Lain-2026"}), true) //nolint:gosec // kredensial uji
 	if a[0].in.Password != "Demo-Lain-2026" {
 		t.Fatal("SEED_DEMO_PASSWORD tidak dipakai")
 	}
