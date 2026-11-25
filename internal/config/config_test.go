@@ -1,6 +1,65 @@
 package config
 
-import "testing"
+import (
+	"encoding/base64"
+	"testing"
+)
+
+func setRequiredEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://contoh")
+	t.Setenv("S3_ENDPOINT", "localhost:9000")
+	t.Setenv("S3_BUCKET", "ppkpt-evidence")
+}
+
+func TestLoad_MFA(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("APP_ENV", "dev")
+	t.Setenv("MFA_ENABLED", "")
+	t.Setenv("MFA_ENCRYPTION_KEY", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("dev tanpa MFA: %v", err)
+	}
+	if cfg.MFA.Enabled {
+		t.Fatal("MFA harus nonaktif secara default di dev")
+	}
+
+	t.Setenv("MFA_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatal("MFA_ENABLED=true tanpa kunci harus ditolak")
+	}
+
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	t.Setenv("MFA_ENCRYPTION_KEY", key)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("dengan kunci: %v", err)
+	}
+	if !cfg.MFA.Enabled || len(cfg.MFA.EncryptionKey) != 32 {
+		t.Fatalf("MFA = %+v", cfg.MFA)
+	}
+
+	t.Setenv("MFA_ENCRYPTION_KEY", "pendek")
+	if _, err := Load(); err == nil {
+		t.Fatal("kunci bukan 32 byte harus ditolak")
+	}
+}
+
+func TestLoad_MFAProduksiAktifSecaraDefault(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("MFA_ENABLED", "")
+	t.Setenv("MFA_ENCRYPTION_KEY", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("produksi tanpa MFA_ENCRYPTION_KEY harus gagal saat start")
+	}
+
+	t.Setenv("MFA_ENABLED", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("produksi dengan MFA_ENABLED=false harus ditolak")
+	}
+}
 
 func TestLoad_MemakaiDefaultRateLimitDanFallbackStorageDev(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://contoh")

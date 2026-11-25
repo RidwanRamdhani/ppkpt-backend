@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -25,6 +26,8 @@ type Config struct {
 	PinMaxAttempts   int
 	PinLockMinutes   int
 
+	MFA MFA
+
 	Storage Storage
 
 	MaxUploadBytes     int64
@@ -40,6 +43,16 @@ type Config struct {
 
 	Deadline  Deadline
 	RateLimit RateLimit
+}
+
+// MFA mengatur login dua tahap berbasis TOTP (FR-17 revisi).
+type MFA struct {
+	Enabled       bool
+	Issuer        string
+	ChallengeTTL  int // menit
+	MaxAttempts   int
+	RecoveryCodes int
+	EncryptionKey []byte // 32 byte, hasil decode base64
 }
 
 type Storage struct {
@@ -73,8 +86,10 @@ type RateLimit struct {
 }
 
 func Load() (Config, error) {
+	appEnv := getenv("APP_ENV", "dev")
+
 	cfg := Config{
-		AppEnv:               getenv("APP_ENV", "dev"),
+		AppEnv:               appEnv,
 		HTTPAddr:             getenv("HTTP_ADDR", ":8080"),
 		AppOrigin:            getenv("APP_ORIGIN", "http://localhost:3000"),
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
@@ -86,6 +101,15 @@ func Load() (Config, error) {
 		LoginLockMinutes:     getenvInt("LOGIN_LOCK_MINUTES", 15),
 		PinMaxAttempts:       getenvInt("PIN_MAX_ATTEMPTS", 5),
 		PinLockMinutes:       getenvInt("PIN_LOCK_MINUTES", 15),
+		MFA: MFA{
+			// Aman secara default di produksi, tetapi tetap bisa dimatikan
+			// untuk dev/test sesuai DECISIONS T15.
+			Enabled:       getenvBool("MFA_ENABLED", isProductionEnv(appEnv)),
+			Issuer:        getenv("MFA_ISSUER", "PPKPT"),
+			ChallengeTTL:  getenvInt("MFA_CHALLENGE_TTL_MINUTES", 5),
+			MaxAttempts:   getenvInt("MFA_MAX_ATTEMPTS", 5),
+			RecoveryCodes: getenvInt("MFA_RECOVERY_CODES", 10),
+		},
 		Storage: Storage{
 			Endpoint:  os.Getenv("S3_ENDPOINT"),
 			AccessKey: storageAccessKey(),
@@ -127,8 +151,51 @@ func Load() (Config, error) {
 	if cfg.Storage.Bucket == "" {
 		return Config{}, fmt.Errorf("S3_BUCKET wajib diisi")
 	}
+	if cfg.MFA.ChallengeTTL <= 0 {
+		return Config{}, fmt.Errorf("MFA_CHALLENGE_TTL_MINUTES harus lebih dari 0")
+	}
+	if cfg.MFA.MaxAttempts <= 0 {
+		return Config{}, fmt.Errorf("MFA_MAX_ATTEMPTS harus lebih dari 0")
+	}
+	if cfg.MFA.RecoveryCodes <= 0 {
+		return Config{}, fmt.Errorf("MFA_RECOVERY_CODES harus lebih dari 0")
+	}
+	if raw := strings.TrimSpace(os.Getenv("MFA_ENCRYPTION_KEY")); raw != "" {
+		key, err := decodeBase64Key(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("MFA_ENCRYPTION_KEY tidak valid: %w", err)
+		}
+		cfg.MFA.EncryptionKey = key
+	}
+	if isProductionEnv(appEnv) && !cfg.MFA.Enabled {
+		return Config{}, fmt.Errorf("MFA_ENABLED wajib true di produksi")
+	}
+	if cfg.MFA.Enabled && len(cfg.MFA.EncryptionKey) == 0 {
+		return Config{}, fmt.Errorf("MFA_ENCRYPTION_KEY wajib diisi (32 byte base64) bila MFA_ENABLED=true")
+	}
 
 	return cfg, nil
+}
+
+// isProductionEnv dipakai untuk default MFA_ENABLED yang aman.
+func isProductionEnv(env string) bool {
+	e := strings.ToLower(strings.TrimSpace(env))
+	return e == "production" || e == "prod"
+}
+
+// decodeBase64Key menerima base64 standar maupun raw (tanpa padding).
+func decodeBase64Key(raw string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		key, err = base64.RawStdEncoding.DecodeString(raw)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("harus base64")
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("harus 32 byte, dapat %d byte", len(key))
+	}
+	return key, nil
 }
 
 func MustLoad() Config {

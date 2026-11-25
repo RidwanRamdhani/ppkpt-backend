@@ -11,8 +11,10 @@
 #
 # Prasyarat: curl, go (atau PROVISION_BIN), database + migrasi, .env terisi.
 # API: bila BASE_URL belum menjawab /api/health, script menjalankan API sendiri
-# (API_BIN atau `go run ./cmd/api`) dengan RATE_LIMIT_AUTH_PER_MINUTE besar agar
-# batas laju tidak menghalangi uji, lalu menghentikannya saat selesai.
+# (API_BIN atau `go run ./cmd/api`) dengan RATE_LIMIT_AUTH_PER_MINUTE besar dan
+# MFA_ENABLED=false agar alur uji satu-tahap tidak terhalang 2FA, lalu
+# menghentikannya saat selesai. Bila memakai API yang sudah berjalan dengan 2FA
+# aktif, matikan MFA_ENABLED atau sesuaikan skrip.
 #
 # Variabel (semua opsional):
 #   BASE_URL            default http://localhost:8080
@@ -109,9 +111,9 @@ if ! curl -s -m 3 -o /dev/null -w '%{http_code}' "$BASE_URL/api/health" | grep -
   port="${BASE_URL##*:}"; port="${port%%/*}"
   echo "  API belum menjawab di $BASE_URL; menjalankan API sendiri di :$port ..."
   if [ -n "${API_BIN:-}" ]; then
-    HTTP_ADDR=":$port" RATE_LIMIT_AUTH_PER_MINUTE=1000 "$API_BIN" >"$TMP/api.log" 2>&1 &
+    HTTP_ADDR=":$port" RATE_LIMIT_AUTH_PER_MINUTE=1000 MFA_ENABLED=false "$API_BIN" >"$TMP/api.log" 2>&1 &
   else
-    HTTP_ADDR=":$port" RATE_LIMIT_AUTH_PER_MINUTE=1000 go run ./cmd/api >"$TMP/api.log" 2>&1 &
+    HTTP_ADDR=":$port" RATE_LIMIT_AUTH_PER_MINUTE=1000 MFA_ENABLED=false go run ./cmd/api >"$TMP/api.log" 2>&1 &
   fi
   API_PID=$!
   for _ in $(seq 1 40); do

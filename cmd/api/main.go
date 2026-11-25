@@ -48,6 +48,9 @@ func run() int {
 		return 1
 	}
 
+	if !cfg.MFA.Enabled {
+		logger.Warn("2FA dinonaktifkan; pengaturan ini hanya untuk dev/test", "env", cfg.AppEnv)
+	}
 	logger.Info("memulai aplikasi", "env", cfg.AppEnv, "addr", cfg.HTTPAddr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

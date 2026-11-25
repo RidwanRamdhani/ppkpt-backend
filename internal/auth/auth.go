@@ -33,6 +33,10 @@ const (
 	// SessionCookieName adalah nama cookie sesi.
 	SessionCookieName = "ppkpt_session"
 
+	// MFACookieName adalah cookie status setengah-jadi antara password valid
+	// dan 2FA selesai. Cookie ini bukan sesi dan tidak diterima middleware.
+	MFACookieName = "ppkpt_mfa"
+
 	// CodePasswordChangeRequired adalah kode mesin untuk akun yang wajib
 	// mengganti password sebelum memakai endpoint lain (FR-20).
 	CodePasswordChangeRequired = "PASSWORD_CHANGE_REQUIRED" //nolint:gosec // kode galat, bukan kredensial
@@ -46,6 +50,16 @@ type Options struct {
 	SessionIdle       time.Duration
 	SessionAbsolute   time.Duration
 	CookieSecure      bool
+
+	// 2FA TOTP (FR-17 revisi). MFAEnabled sengaja default false pada struct
+	// kosong agar pengujian unit bisa memakai jalur login lama; konfigurasi
+	// aplikasi mengaktifkannya secara eksplisit lewat OptionsFromConfig.
+	MFAEnabled       bool
+	MFAIssuer        string
+	MFAChallengeTTL  time.Duration
+	MFAMaxAttempts   int
+	MFARecoveryCodes int
+	MFAEncryptionKey []byte
 }
 
 // OptionsFromConfig menurunkan Options dari konfigurasi aplikasi.
@@ -57,6 +71,12 @@ func OptionsFromConfig(cfg config.Config) Options {
 		SessionIdle:       time.Duration(cfg.SessionIdleMinutes) * time.Minute,
 		SessionAbsolute:   time.Duration(cfg.SessionAbsoluteHours) * time.Hour,
 		CookieSecure:      cfg.CookieSecure,
+		MFAEnabled:        cfg.MFA.Enabled,
+		MFAIssuer:         cfg.MFA.Issuer,
+		MFAChallengeTTL:   time.Duration(cfg.MFA.ChallengeTTL) * time.Minute,
+		MFAMaxAttempts:    cfg.MFA.MaxAttempts,
+		MFARecoveryCodes:  cfg.MFA.RecoveryCodes,
+		MFAEncryptionKey:  cfg.MFA.EncryptionKey,
 	}
 }
 
@@ -77,6 +97,18 @@ func (o Options) withDefaults() Options {
 	if o.SessionAbsolute <= 0 {
 		o.SessionAbsolute = 8 * time.Hour
 	}
+	if o.MFAIssuer == "" {
+		o.MFAIssuer = "PPKPT"
+	}
+	if o.MFAChallengeTTL <= 0 {
+		o.MFAChallengeTTL = 5 * time.Minute
+	}
+	if o.MFAMaxAttempts <= 0 {
+		o.MFAMaxAttempts = 5
+	}
+	if o.MFARecoveryCodes <= 0 {
+		o.MFARecoveryCodes = 10
+	}
 	return o
 }
 
@@ -90,6 +122,7 @@ type User struct {
 	Role               string     `json:"role"`
 	IsActive           bool       `json:"is_active"`
 	MustChangePassword bool       `json:"must_change_password"`
+	TotpEnabled        bool       `json:"totp_enabled"`
 	LastLoginAt        *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt          time.Time  `json:"-"`
 }
@@ -102,6 +135,7 @@ type Principal struct {
 	Email              string
 	Role               string
 	MustChangePassword bool
+	TotpEnabled        bool
 	// SessionID adalah hash token sesi (kunci baris sessions), bukan token mentah.
 	SessionID string
 }

@@ -8,6 +8,7 @@
 //	provision create -name "Satgas A" -username satgas.a -email a@kampus.ac.id -role SATGAS
 //	provision deactivate <username|email>
 //	provision reset-password <username|email>
+//	provision reset-2fa --username <username|email>
 //	provision list
 //
 // Password tidak pernah diterima lewat argumen baris perintah (terlihat di
@@ -54,6 +55,7 @@ type accounts interface {
 	CreateUser(ctx context.Context, in auth.CreateUserInput) (*auth.User, error)
 	DeactivateUser(ctx context.Context, identifier, source string) (bool, error)
 	ResetPassword(ctx context.Context, identifier, newPassword, source string) error
+	ResetMFA(ctx context.Context, identifier, source string) error
 	ListUsers(ctx context.Context) ([]auth.User, error)
 }
 
@@ -104,6 +106,7 @@ const usageText = `Pemakaian:
   provision create -name NAMA -username USERNAME -email EMAIL -role SATGAS|PEJABAT
   provision deactivate USERNAME_ATAU_EMAIL
   provision reset-password USERNAME_ATAU_EMAIL
+  provision reset-2fa --username USERNAME_ATAU_EMAIL
   provision list
 
 Password: isi PROVISION_PASSWORD untuk menentukan sendiri; bila kosong dibuat
@@ -151,6 +154,28 @@ func parse(args []string, stderr io.Writer) (request, int) {
 			return usage(req.cmd + ": tepat satu argumen (username atau email) diperlukan")
 		}
 		req.identifier = rest[0]
+	case "reset-2fa":
+		fs := flag.NewFlagSet("reset-2fa", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		username := fs.String("username", "", "username atau email")
+		if err := fs.Parse(rest); err != nil {
+			return request{}, exitUsage
+		}
+		ident := strings.TrimSpace(*username)
+		switch fs.NArg() {
+		case 0:
+		case 1:
+			if ident != "" {
+				return usage("reset-2fa: gunakan --username atau argumen posisional, bukan keduanya")
+			}
+			ident = strings.TrimSpace(fs.Arg(0))
+		default:
+			return usage("reset-2fa: terlalu banyak argumen")
+		}
+		if ident == "" || strings.HasPrefix(ident, "-") {
+			return usage("reset-2fa: tepat satu username atau email diperlukan")
+		}
+		req.identifier = ident
 	case "list":
 		if len(rest) != 0 {
 			return usage("list: tidak menerima argumen")
@@ -205,13 +230,20 @@ func execute(ctx context.Context, acc accounts, req request, stdout, stderr io.W
 		sayf(stdout, "Password akun %s direset; kunci dibuka dan seluruh sesi dicabut.\n", req.identifier)
 		printPassword(stdout, password, generated)
 
+	case "reset-2fa":
+		if err := acc.ResetMFA(ctx, req.identifier, source); err != nil {
+			return report(stderr, err)
+		}
+		sayf(stdout, "Perangkat 2FA akun %s direset; recovery code dan seluruh sesi dicabut.\n", req.identifier)
+		say(stdout, "Petugas wajib mendaftarkan authenticator baru saat login berikutnya.")
+
 	case "list":
 		users, err := acc.ListUsers(ctx)
 		if err != nil {
 			return report(stderr, err)
 		}
 		tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-		say(tw, "ID\tUSERNAME\tEMAIL\tROLE\tSTATUS\tGANTI PASSWORD\tLOGIN TERAKHIR")
+		say(tw, "ID\tUSERNAME\tEMAIL\tROLE\tSTATUS\tGANTI PASSWORD\t2FA\tLOGIN TERAKHIR")
 		for _, u := range users {
 			status, last := "aktif", "-"
 			if !u.IsActive {
@@ -224,7 +256,11 @@ func execute(ctx context.Context, acc accounts, req request, stdout, stderr io.W
 			if u.MustChangePassword {
 				must = "ya"
 			}
-			sayf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", u.ID, u.Username, u.Email, u.Role, status, must, last)
+			totp := "belum"
+			if u.TotpEnabled {
+				totp = "aktif"
+			}
+			sayf(tw, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", u.ID, u.Username, u.Email, u.Role, status, must, totp, last)
 		}
 		_ = tw.Flush()
 	}

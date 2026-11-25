@@ -13,6 +13,15 @@ const (
 	ActionUserCreated     = "USER_CREATED"
 	ActionUserDeactivated = "USER_DEACTIVATED"
 
+	// Two-factor authentication (FR-17 revisi).
+	ActionMFASuccess                  = "MFA_SUCCESS"
+	ActionMFAFailed                   = "MFA_FAILED"
+	ActionMFAEnrolled                 = "MFA_ENROLLED"
+	ActionMFADisabled                 = "MFA_DISABLED"
+	ActionMFARecoveryUsed             = "MFA_RECOVERY_USED"
+	ActionMFARecoveryCodesRegenerated = "MFA_RECOVERY_CODES_REGENERATED"
+	ActionMFAResetByAdmin             = "MFA_RESET_BY_ADMIN"
+
 	// Pelaporan dan cek status.
 	ActionReportSubmitted  = "REPORT_SUBMITTED"
 	ActionReportCompleted  = "REPORT_COMPLETED"
