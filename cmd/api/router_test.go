@@ -84,6 +84,26 @@ func TestRouter_RouteAutentikasiTerdaftar(t *testing.T) {
 	}
 }
 
+func TestRouter_Route2FATerdaftar(t *testing.T) {
+	h := newTestRouter(t, true, nil)
+	for _, path := range []string{
+		"/api/auth/2fa/setup",
+		"/api/auth/2fa/enable",
+		"/api/auth/2fa/verify",
+		"/api/auth/2fa/disable",
+		"/api/auth/2fa/recovery",
+	} {
+		rec := send(h, http.MethodPost, path, `{}`, testOrigin)
+		if rec.Code == http.StatusNotFound || rec.Code == http.StatusMethodNotAllowed {
+			t.Errorf("route POST %s tidak terdaftar (status %d)", path, rec.Code)
+			continue
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s tanpa sesi/challenge: %d, mau 401", path, rec.Code)
+		}
+	}
+}
+
 func TestRouter_CSRFMenolakOriginAsing(t *testing.T) {
 	h := newTestRouter(t, true, nil)
 	rec := send(h, http.MethodPost, "/api/auth/login", `{"identifier":"a","password":"b"}`, "https://jahat.example")

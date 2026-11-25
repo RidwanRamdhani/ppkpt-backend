@@ -184,7 +184,8 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, newPassword, so
 // ListUsers mengembalikan seluruh akun (tanpa data rahasia), urut berdasarkan ID.
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, username, email, role, is_active, must_change_password, last_login_at, created_at
+		SELECT id, name, username, email, role, is_active, must_change_password, last_login_at, created_at,
+			totp_enabled_at IS NOT NULL
 		FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -194,12 +195,46 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.Name, &u.Username, &u.Email, &u.Role, &u.IsActive,
-			&u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt); err != nil {
+			&u.MustChangePassword, &u.LastLoginAt, &u.CreatedAt, &u.TotpEnabled); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
 	}
 	return out, rows.Err()
+}
+
+// ResetMFA menghapus perangkat 2FA seorang petugas (dipakai bila perangkat
+// hilang). Secret, recovery code, challenge yang belum terpakai, dan seluruh
+// sesi dicabut agar petugas wajib enroll ulang pada login berikutnya.
+func (s *Service) ResetMFA(ctx context.Context, identifier, source string) error {
+	ident := normalizeIdentifier(identifier)
+	return db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		u, err := findByIdentifier(ctx, tx, ident)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE users SET totp_secret_enc = NULL, totp_enabled_at = NULL, totp_last_step = NULL
+			WHERE id = $1`, u.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM recovery_codes WHERE user_id = $1`, u.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM mfa_challenges WHERE user_id = $1`, u.ID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, u.ID); err != nil {
+			return err
+		}
+		return s.audit.Log(ctx, tx, audit.Event{
+			ActorType: audit.ActorSystem, UserID: userIDPtr(u.ID), Action: audit.ActionMFAResetByAdmin,
+			Entity: "user", EntityID: userIDPtr(u.ID), Detail: map[string]any{"source": source},
+		})
+	})
 }
 
 func validEmail(email string) bool {

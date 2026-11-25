@@ -12,10 +12,15 @@ Backend untuk Platform Manajemen Pelaporan & Penanganan Kasus PPKPT.
 ## Menjalankan
 
 ```bash
+cp .env.example .env   # lalu isi MFA_ENCRYPTION_KEY (lihat bagian 2FA di bawah)
 make up
 make migrate-up
 make run
 ```
+
+> `MFA_ENABLED=true` di `.env.example` mewajibkan `MFA_ENCRYPTION_KEY` terisi;
+> aplikasi akan menolak start bila belum. Untuk cepat di dev tanpa 2FA, set
+> `MFA_ENABLED=false` (produksi selalu dipaksa `true` oleh config).
 
 ## Struktur
 
@@ -40,8 +45,29 @@ make seed-demo                 # akun demo (non-production)
 make provision ARGS="list"
 make provision ARGS='create -name "Satgas A" -username satgas.a -email a@kampus.ac.id -role SATGAS'
 make provision ARGS="reset-password satgas.a"
+make provision ARGS="reset-2fa --username satgas.a"
 make provision ARGS="deactivate satgas.a"
 ```
+
+## 2FA petugas
+
+Login petugas memakai dua tahap: password lalu kode TOTP dari aplikasi
+authenticator. Enrollment wajib pada login pertama. Endpoint yang dipakai
+frontend: `POST /api/auth/login` → `POST /api/auth/2fa/setup` (hanya saat
+`enrollment_required=true`) → `POST /api/auth/2fa/enable`, atau
+`POST /api/auth/2fa/verify` pada login berikutnya. Recovery code ditampilkan
+sekali saat enrollment dan dapat diterbitkan ulang lewat
+`POST /api/auth/2fa/recovery`.
+
+Aktifkan dengan `MFA_ENABLED=true` dan isi `MFA_ENCRYPTION_KEY` (32 byte
+base64, mis. `openssl rand -base64 32`). Kunci yang sama harus dipakai terus;
+menggantinya membuat seluruh secret TOTP lama tidak dapat dibaca. Di dev/test
+2FA boleh dimatikan dengan `MFA_ENABLED=false` (default dev), tetapi produksi
+mewajibkannya aktif.
+
+Bila petugas kehilangan perangkat, jalankan
+`make provision ARGS="reset-2fa --username satgas.a"`; petugas akan mendaftarkan
+authenticator baru saat login berikutnya.
 
 ## Test
 

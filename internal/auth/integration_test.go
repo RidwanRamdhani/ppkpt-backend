@@ -138,6 +138,14 @@ func TestLogin_BerhasilDenganUsernameDanEmail(t *testing.T) {
 	if e.auditCount(username, audit.ActionLoginSuccess) != 3 {
 		t.Fatal("LOGIN_SUCCESS harus tercatat tiap login")
 	}
+	var lastLogin *time.Time
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT last_login_at FROM users WHERE username = $1`, username).Scan(&lastLogin); err != nil {
+		t.Fatal(err)
+	}
+	if lastLogin == nil {
+		t.Fatal("last_login_at harus terisi setelah login (jalur tanpa 2FA)")
+	}
 	var h string
 	_ = e.pool.QueryRow(context.Background(), `SELECT password_hash FROM users WHERE username=$1`, username).Scan(&h)
 	if !strings.HasPrefix(h, "$2") || h == testPassword {

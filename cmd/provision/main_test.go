@@ -21,6 +21,8 @@ type fakeAccounts struct {
 	resetID     string
 	resetPW     string
 	resetErr    error
+	resetMFAID  string
+	resetMFAErr error
 	users       []auth.User
 }
 
@@ -38,6 +40,10 @@ func (f *fakeAccounts) DeactivateUser(_ context.Context, id, _ string) (bool, er
 func (f *fakeAccounts) ResetPassword(_ context.Context, id, pw, _ string) error {
 	f.resetID, f.resetPW = id, pw
 	return f.resetErr
+}
+func (f *fakeAccounts) ResetMFA(_ context.Context, id, _ string) error {
+	f.resetMFAID = id
+	return f.resetMFAErr
 }
 func (f *fakeAccounts) ListUsers(context.Context) ([]auth.User, error) { return f.users, nil }
 
@@ -58,6 +64,8 @@ func TestParse(t *testing.T) {
 		"deactivate terlalu":      {"deactivate", "a", "b"},
 		"reset tanpa arg":         {"reset-password"},
 		"password lewat flag":     {"reset-password", "-password=rahasia"},
+		"reset-2fa tanpa arg":     {"reset-2fa"},
+		"reset-2fa terlalu":       {"reset-2fa", "a", "b"},
 		"list dengan argumen":     {"list", "x"},
 		"flag create tak dikenal": {"create", "-password", "x"},
 	} {
@@ -68,6 +76,16 @@ func TestParse(t *testing.T) {
 	}
 	if _, code := parse([]string{"deactivate", "satgas.a"}, &errb); code != exitOK {
 		t.Fatal("deactivate valid ditolak")
+	}
+	for _, args := range [][]string{
+		{"reset-2fa", "--username", "satgas.a"},
+		{"reset-2fa", "-username", "satgas.a"},
+		{"reset-2fa", "satgas.a"},
+	} {
+		req, code := parse(args, &errb)
+		if code != exitOK || req.cmd != "reset-2fa" || req.identifier != "satgas.a" {
+			t.Errorf("parse %v = %+v, %d", args, req, code)
+		}
 	}
 }
 
@@ -159,6 +177,15 @@ func TestExecuteDeactivateResetList(t *testing.T) {
 	execute(context.Background(), f, request{cmd: "reset-password", identifier: "satgas.a"}, &out, &errb, noEnv)
 	if f.resetID != "satgas.a" || auth.ValidatePassword(f.resetPW) != nil || !strings.Contains(out.String(), f.resetPW) {
 		t.Fatalf("reset: %+v / %s", f, out.String())
+	}
+
+	out.Reset()
+	f.resetMFAErr = nil
+	if code := execute(context.Background(), f, request{cmd: "reset-2fa", identifier: "satgas.a"}, &out, &errb, noEnv); code != exitOK {
+		t.Fatalf("reset-2fa: %d %s", code, errb.String())
+	}
+	if f.resetMFAID != "satgas.a" || !strings.Contains(out.String(), "Perangkat 2FA") {
+		t.Fatalf("reset-2fa tidak dijalankan: %+v / %s", f, out.String())
 	}
 
 	out.Reset()

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/cipher"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ type Service struct {
 	logger *slog.Logger
 	opts   Options
 	hasher *hasher
+	mfa    cipher.AEAD
 	now    func() time.Time
 }
 
@@ -40,28 +42,40 @@ func NewService(pool *pgxpool.Pool, auditor *audit.Service, logger *slog.Logger,
 	if err != nil {
 		return nil, err
 	}
-	return &Service{pool: pool, audit: auditor, logger: logger, opts: opts, hasher: h, now: time.Now}, nil
+	var aead cipher.AEAD
+	if opts.MFAEnabled {
+		aead, err = newMFACipher(opts.MFAEncryptionKey)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &Service{pool: pool, audit: auditor, logger: logger, opts: opts, hasher: h, mfa: aead, now: time.Now}, nil
 }
 
 // ---------------------------------------------------------------- akses data
 
 type userRecord struct {
 	User
-	passwordHash string
-	failedCount  int16
-	lockedUntil  *time.Time
+	passwordHash  string
+	failedCount   int16
+	lockedUntil   *time.Time
+	totpEnabledAt *time.Time
+	totpLastStep  *int64
 }
 
 const userSelect = `SELECT id, name, username, email, password_hash, role, is_active,
-	must_change_password, failed_login_count, locked_until, last_login_at, created_at
+	must_change_password, failed_login_count, locked_until, last_login_at, created_at,
+	totp_enabled_at, totp_last_step
 	FROM users`
 
 func scanUser(row pgx.Row) (*userRecord, error) {
 	var u userRecord
 	if err := row.Scan(&u.ID, &u.Name, &u.Username, &u.Email, &u.passwordHash, &u.Role,
-		&u.IsActive, &u.MustChangePassword, &u.failedCount, &u.lockedUntil, &u.LastLoginAt, &u.CreatedAt); err != nil {
+		&u.IsActive, &u.MustChangePassword, &u.failedCount, &u.lockedUntil, &u.LastLoginAt, &u.CreatedAt,
+		&u.totpEnabledAt, &u.totpLastStep); err != nil {
 		return nil, err
 	}
+	u.TotpEnabled = u.totpEnabledAt != nil
 	return &u, nil
 }
 
@@ -124,14 +138,21 @@ type LoginInput struct {
 	UserAgent  string
 }
 
-// LoginResult berisi pengguna dan token sesi untuk dipasang di cookie.
+// LoginResult berisi hasil tahap pertama login. Saat 2FA aktif, Token kosong
+// dan MFARequired=true; MFAToken harus dipasang sebagai cookie ppkpt_mfa dan
+// ditukar lewat endpoint /api/auth/2fa/*.
 type LoginResult struct {
 	User      User
 	Token     string
 	ExpiresAt time.Time
+
+	MFARequired        bool
+	EnrollmentRequired bool
+	MFAToken           string
+	MFAExpiresAt       time.Time
 }
 
-// Login memverifikasi kredensial lalu membuat sesi baru.
+// Login memverifikasi kredensial lalu membuat sesi baru atau challenge 2FA.
 //
 // Pesan galat tidak membedakan akun yang tidak ada, password salah, dan akun
 // nonaktif. Pengecualian: akun yang sedang terkunci menghasilkan 423 beserta
@@ -180,40 +201,27 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 		return nil, s.failLogin(ctx, u.ID, in.IP, "inactive")
 	}
 
-	token, sessionID, err := newToken()
-	if err != nil {
-		return nil, fmt.Errorf("auth: buat token: %w", err)
+	if s.opts.MFAEnabled {
+		return s.startMFAChallenge(ctx, u, in, now)
 	}
-	expires := now.Add(s.opts.SessionAbsolute)
 
+	var (
+		token   string
+		expires time.Time
+	)
 	err = db.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx,
-			`UPDATE users SET failed_login_count = 0, locked_until = NULL, last_login_at = $2 WHERE id = $1`,
-			u.ID, now); err != nil {
+		if err := s.prepareLogin(ctx, tx, u, in, now); err != nil {
 			return err
 		}
-		// Naikkan cost hash secara bertahap bila BCRYPT_COST dinaikkan.
-		if s.hasher.NeedsRehash(u.passwordHash) {
-			if h, herr := s.hasher.Hash(in.Password); herr == nil {
-				if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, u.ID, h); err != nil {
-					return err
-				}
-			}
-		}
-		// Bersihkan sesi lama milik pengguna yang sudah tidak berlaku.
+		// Tanpa 2FA, login dianggap selesai pada tahap ini sehingga
+		// last_login_at langsung diisi. Dengan 2FA, kolom ini diisi oleh
+		// MFAEnable/MFAVerify agar tidak menandai login yang belum tuntas.
 		if _, err := tx.Exec(ctx,
-			`DELETE FROM sessions WHERE user_id = $1 AND (expires_at <= $2 OR last_seen_at <= $3)`,
-			u.ID, now, now.Add(-s.opts.SessionIdle)); err != nil {
+			`UPDATE users SET last_login_at = $2 WHERE id = $1`, u.ID, now); err != nil {
 			return err
 		}
-		ua := in.UserAgent
-		if len(ua) > maxUserAgentLen {
-			ua = ua[:maxUserAgentLen]
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent)
-			VALUES ($1, $2, $3, $3, $4, NULLIF($5, ''), NULLIF($6, ''))`,
-			sessionID, u.ID, now, expires, in.IP, ua); err != nil {
+		token, expires, err = s.createSession(ctx, tx, u.ID, in.IP, in.UserAgent, now)
+		if err != nil {
 			return err
 		}
 		return s.audit.Log(ctx, tx, audit.Event{
@@ -229,6 +237,54 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (*LoginResult, error
 	user := u.User
 	user.LastLoginAt = &now
 	return &LoginResult{User: user, Token: token, ExpiresAt: expires}, nil
+}
+
+// prepareLogin mereset penghitung gagal dan menaikkan cost hash bila perlu.
+// last_login_at sengaja TIDAK diisi di sini: pada login berbasis 2FA kolom itu
+// baru diisi setelah kode berhasil diverifikasi (MFAEnable/MFAVerify), dan pada
+// login tanpa 2FA diisi terpisah oleh pemanggil.
+func (s *Service) prepareLogin(ctx context.Context, tx pgx.Tx, u *userRecord, in LoginInput, now time.Time) error {
+	if _, err := tx.Exec(ctx,
+		`UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1`, u.ID); err != nil {
+		return err
+	}
+	// Naikkan cost hash secara bertahap bila BCRYPT_COST dinaikkan.
+	if s.hasher.NeedsRehash(u.passwordHash) {
+		if h, herr := s.hasher.Hash(in.Password); herr == nil {
+			if _, err := tx.Exec(ctx, `UPDATE users SET password_hash = $2 WHERE id = $1`, u.ID, h); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// createSession membuat token sesi, membersihkan sesi kedaluwarsa, lalu
+// menyimpan hash token. Token mentah hanya dikembalikan ke pemanggil untuk
+// dipasang di cookie.
+func (s *Service) createSession(ctx context.Context, tx pgx.Tx, userID int64, ip, userAgent string, now time.Time) (string, time.Time, error) {
+	token, sessionID, err := newToken()
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("auth: buat token: %w", err)
+	}
+	expires := now.Add(s.opts.SessionAbsolute)
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM sessions WHERE user_id = $1 AND (expires_at <= $2 OR last_seen_at <= $3)`,
+		userID, now, now.Add(-s.opts.SessionIdle)); err != nil {
+		return "", time.Time{}, err
+	}
+	ua := userAgent
+	if len(ua) > maxUserAgentLen {
+		ua = ua[:maxUserAgentLen]
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, ip_address, user_agent)
+		VALUES ($1, $2, $3, $3, $4, NULLIF($5, ''), NULLIF($6, ''))`,
+		sessionID, userID, now, expires, ip, ua); err != nil {
+		return "", time.Time{}, err
+	}
+	return token, expires, nil
 }
 
 // failLogin mencatat satu kegagalan login dan mengembalikan galat yang sesuai
@@ -284,9 +340,10 @@ func (s *Service) Authenticate(ctx context.Context, token string) (*Principal, e
 		active            bool
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT s.last_seen_at, s.expires_at, u.id, u.name, u.username, u.email, u.role, u.is_active, u.must_change_password
+		SELECT s.last_seen_at, s.expires_at, u.id, u.name, u.username, u.email, u.role, u.is_active, u.must_change_password,
+			u.totp_enabled_at IS NOT NULL
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.id = $1`, id).Scan(&lastSeen, &expires, &p.UserID, &p.Name, &p.Username, &p.Email, &p.Role, &active, &p.MustChangePassword)
+		WHERE s.id = $1`, id).Scan(&lastSeen, &expires, &p.UserID, &p.Name, &p.Username, &p.Email, &p.Role, &active, &p.MustChangePassword, &p.TotpEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, httpx.ErrUnauthorized()
 	}
@@ -326,14 +383,24 @@ func (s *Service) Logout(ctx context.Context, token, ip string) error {
 		if err != nil {
 			return err
 		}
-		return s.audit.Log(ctx, tx, audit.Event{
+		// Audit lebih dulu: INSERT audit_logs mengambil kunci KEY SHARE pada
+		// baris users, sehingga urutannya menjadi user -> challenge — sama
+		// dengan transaksi login/verify/disable. Membaliknya bisa deadlock.
+		if err := s.audit.Log(ctx, tx, audit.Event{
 			ActorType: audit.ActorUser, UserID: userIDPtr(uid), Action: audit.ActionLogout,
 			Entity: "user", EntityID: userIDPtr(uid), IP: ip,
-		})
+		}); err != nil {
+			return err
+		}
+		// Challenge 2FA yang belum terpakai tidak boleh bertahan setelah logout.
+		_, err = tx.Exec(ctx,
+			`DELETE FROM mfa_challenges WHERE user_id = $1 AND consumed_at IS NULL`, uid)
+		return err
 	})
 }
 
-// CleanupSessions menghapus sesi yang sudah tidak berlaku dan mengembalikan jumlahnya.
+// CleanupSessions menghapus sesi dan challenge 2FA yang sudah tidak berlaku,
+// lalu mengembalikan jumlah baris yang dihapus.
 func (s *Service) CleanupSessions(ctx context.Context) (int64, error) {
 	now := s.now()
 	tag, err := s.pool.Exec(ctx,
@@ -341,7 +408,12 @@ func (s *Service) CleanupSessions(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	chTag, err := s.pool.Exec(ctx,
+		`DELETE FROM mfa_challenges WHERE consumed_at IS NOT NULL OR expires_at <= $1`, now)
+	if err != nil {
+		return tag.RowsAffected(), err
+	}
+	return tag.RowsAffected() + chTag.RowsAffected(), nil
 }
 
 // RunCleanup membersihkan sesi kedaluwarsa secara berkala sampai ctx selesai.
