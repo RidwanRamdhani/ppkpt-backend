@@ -50,6 +50,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	registerReportRoutes(mux, deps)
 	registerCaseRoutes(mux, deps)
 	registerReviewRoutes(mux, deps)
+	registerReferralRoutes(mux, deps)
 
 	// Autentikasi: login, logout, ganti password, dan /me. Login dan ganti
 	// password dibatasi AuthLimiter (per IP). Route fitur lain memakai
