@@ -917,6 +917,59 @@ func TestIntegrasiDetailKasus(t *testing.T) {
 		}
 	})
 
+	t.Run("detail memuat rujukan dan pemulihan untuk PJ", func(t *testing.T) {
+		var partyID int64
+		if err := e.pool.QueryRow(ctx,
+			`SELECT id FROM parties WHERE report_id = $1 ORDER BY id LIMIT 1`, submitted,
+		).Scan(&partyID); err != nil {
+			t.Fatalf("baca pihak: %v", err)
+		}
+		if _, err := e.pool.Exec(ctx, `
+			INSERT INTO referrals
+				(report_id, service_type, target_party_id, institution, referral_date, follow_up_status, notes, created_by)
+			VALUES ($1, 'PSIKOLOGIS', $2, 'Unit Layanan Psikologi', CURRENT_DATE, 'DIPROSES', 'Catatan rujukan uji', $3)`,
+			submitted, partyID, e.satgasA,
+		); err != nil {
+			t.Fatalf("buat rujukan: %v", err)
+		}
+		if _, err := e.pool.Exec(ctx, `
+			INSERT INTO recovery_monitorings (report_id, type, note, recorded_at, created_by)
+			VALUES ($1, 'PEMANTAUAN', 'Pemantauan uji', CURRENT_DATE, $2)`,
+			submitted, e.satgasA,
+		); err != nil {
+			t.Fatalf("buat pemulihan: %v", err)
+		}
+
+		view, err := e.svc.Detail(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, submitted, "")
+		if err != nil {
+			t.Fatalf("Detail PJ: %v", err)
+		}
+		detail := view.(*cases.SatgasDetail)
+		if len(detail.Referrals) != 1 {
+			t.Fatalf("jumlah rujukan = %d", len(detail.Referrals))
+		}
+		item := detail.Referrals[0]
+		if item.ServiceType != "PSIKOLOGIS" || item.FollowUpStatus != "DIPROSES" {
+			t.Errorf("rujukan = %+v", item)
+		}
+		if item.TargetPartyID == nil || *item.TargetPartyID != partyID {
+			t.Errorf("target pihak = %v, ingin %d", item.TargetPartyID, partyID)
+		}
+		if item.TargetPartyName == nil || *item.TargetPartyName == "" {
+			t.Errorf("nama target pihak kosong: %+v", item.TargetPartyName)
+		}
+		if len(detail.Recoveries) != 1 {
+			t.Fatalf("jumlah pemulihan = %d", len(detail.Recoveries))
+		}
+		if detail.Recoveries[0].Type != "PEMANTAUAN" {
+			t.Errorf("pemulihan = %+v", detail.Recoveries[0])
+		}
+		if !detail.CanSetCondition || !detail.CanRefer || !detail.CanRecordRecovery {
+			t.Errorf("flag M06 salah: condition=%v refer=%v recovery=%v",
+				detail.CanSetCondition, detail.CanRefer, detail.CanRecordRecovery)
+		}
+	})
+
 	t.Run("riwayat menggabungkan status dan aksi", func(t *testing.T) {
 		history, err := e.svc.History(ctx, cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, confidential)
 		if err != nil {

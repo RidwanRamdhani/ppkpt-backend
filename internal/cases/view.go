@@ -3,6 +3,7 @@ package cases
 import (
 	"time"
 
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/referral"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/review"
 )
 
@@ -149,46 +150,51 @@ type StatusHistoryView struct {
 // laporan boleh ada di sini karena pemanggilnya anggota Satgas; identitas
 // pelapor tetap disamarkan bila kasus rahasia dan pemanggil bukan PJ.
 type SatgasDetail struct {
-	ID                    int64               `json:"id"`
-	CaseNumber            string              `json:"case_number"`
-	Channel               string              `json:"channel"`
-	ReferralUnit          string              `json:"referral_unit"`
-	Status                string              `json:"status"`
-	CaseCondition         *string             `json:"case_condition"`
-	ReporterConfidential  bool                `json:"reporter_confidential"`
-	ReporterIsVictim      bool                `json:"reporter_is_victim"`
-	Chronology            string              `json:"chronology"`
-	AdditionalDescription string              `json:"additional_description"`
-	ReportedElsewhere     bool                `json:"reported_elsewhere"`
-	ReportedTo            string              `json:"reported_to"`
-	EffortsMade           string              `json:"efforts_made"`
-	Expectation           string              `json:"expectation"`
-	AssignedTo            *Assignee           `json:"assigned_to"`
-	EnteredBy             *Assignee           `json:"entered_by"`
-	ReceivedAt            *time.Time          `json:"received_at"`
-	ReviewStartedAt       *time.Time          `json:"review_started_at"`
-	ReviewDueAt           *time.Time          `json:"review_due_at"`
-	ExamStartedAt         *time.Time          `json:"exam_started_at"`
-	ExamDueAt             *time.Time          `json:"exam_due_at"`
-	ClosedAt              *time.Time          `json:"closed_at"`
-	CreatedAt             time.Time           `json:"created_at"`
-	UpdatedAt             time.Time           `json:"updated_at"`
-	Deadline              *DeadlineView       `json:"deadline"`
-	ViolationTypes        []string            `json:"violation_types"`
-	Reporter              *ReporterView       `json:"reporter"`
-	Parties               []PartyView         `json:"parties"`
-	Incidents             []IncidentView      `json:"incidents"`
-	Evidences             []EvidenceView      `json:"evidences"`
-	Verifications         []VerificationView  `json:"verifications"`
-	ReviewNote            *review.ReviewView  `json:"review_note"`
-	Sessions              []review.SessionView `json:"sessions"`
-	StatusHistory         []StatusHistoryView `json:"status_history"`
-	Conclusion            *ConclusionSummary  `json:"conclusion"`
-	IsPJ                  bool                `json:"is_pj"`
-	CanTake               bool                `json:"can_take"`
-	CanVerify             bool                `json:"can_verify"`
-	CanReview             bool                `json:"can_review"`
-	CanExamine            bool                `json:"can_examine"`
+	ID                    int64                   `json:"id"`
+	CaseNumber            string                  `json:"case_number"`
+	Channel               string                  `json:"channel"`
+	ReferralUnit          string                  `json:"referral_unit"`
+	Status                string                  `json:"status"`
+	CaseCondition         *string                 `json:"case_condition"`
+	ReporterConfidential  bool                    `json:"reporter_confidential"`
+	ReporterIsVictim      bool                    `json:"reporter_is_victim"`
+	Chronology            string                  `json:"chronology"`
+	AdditionalDescription string                  `json:"additional_description"`
+	ReportedElsewhere     bool                    `json:"reported_elsewhere"`
+	ReportedTo            string                  `json:"reported_to"`
+	EffortsMade           string                  `json:"efforts_made"`
+	Expectation           string                  `json:"expectation"`
+	AssignedTo            *Assignee               `json:"assigned_to"`
+	EnteredBy             *Assignee               `json:"entered_by"`
+	ReceivedAt            *time.Time              `json:"received_at"`
+	ReviewStartedAt       *time.Time              `json:"review_started_at"`
+	ReviewDueAt           *time.Time              `json:"review_due_at"`
+	ExamStartedAt         *time.Time              `json:"exam_started_at"`
+	ExamDueAt             *time.Time              `json:"exam_due_at"`
+	ClosedAt              *time.Time              `json:"closed_at"`
+	CreatedAt             time.Time               `json:"created_at"`
+	UpdatedAt             time.Time               `json:"updated_at"`
+	Deadline              *DeadlineView           `json:"deadline"`
+	ViolationTypes        []string                `json:"violation_types"`
+	Reporter              *ReporterView           `json:"reporter"`
+	Parties               []PartyView             `json:"parties"`
+	Incidents             []IncidentView          `json:"incidents"`
+	Evidences             []EvidenceView          `json:"evidences"`
+	Verifications         []VerificationView      `json:"verifications"`
+	ReviewNote            *review.ReviewView      `json:"review_note"`
+	Sessions              []review.SessionView    `json:"sessions"`
+	Referrals             []referral.ReferralView `json:"referrals"`
+	Recoveries            []referral.RecoveryView `json:"recoveries"`
+	StatusHistory         []StatusHistoryView     `json:"status_history"`
+	Conclusion            *ConclusionSummary      `json:"conclusion"`
+	IsPJ                  bool                    `json:"is_pj"`
+	CanTake               bool                    `json:"can_take"`
+	CanVerify             bool                    `json:"can_verify"`
+	CanReview             bool                    `json:"can_review"`
+	CanExamine            bool                    `json:"can_examine"`
+	CanSetCondition       bool                    `json:"can_set_condition"`
+	CanRefer              bool                    `json:"can_refer"`
+	CanRecordRecovery     bool                    `json:"can_record_recovery"`
 }
 
 // OfficialDetail adalah respons detail kasus untuk Pejabat. Hanya tersedia

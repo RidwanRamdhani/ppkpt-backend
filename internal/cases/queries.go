@@ -8,6 +8,7 @@ import (
 
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/db"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/platform/httpx"
+	"github.com/RidwanRamdhani/ppkpt-backend/internal/referral"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/review"
 	"github.com/RidwanRamdhani/ppkpt-backend/internal/workflow"
 	"github.com/jackc/pgx/v5"
@@ -251,6 +252,14 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	if err != nil {
 		return nil, err
 	}
+	detail.Referrals, err = s.loadReferrals(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	detail.Recoveries, err = s.loadRecoveries(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
 	detail.StatusHistory, err = s.loadStatusHistory(ctx, reportID)
 	if err != nil {
 		return nil, err
@@ -265,6 +274,9 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	detail.CanVerify = isPJ && access.status == string(workflow.Dilaporkan)
 	detail.CanReview = isPJ && access.status == string(workflow.Penelaahan)
 	detail.CanExamine = isPJ && access.status == string(workflow.Pemeriksaan)
+	detail.CanSetCondition = isPJ && referral.ConditionWritable(access.status)
+	detail.CanRefer = isPJ && access.status != string(workflow.Selesai)
+	detail.CanRecordRecovery = detail.CanRefer
 	return detail, nil
 }
 
@@ -697,6 +709,91 @@ func (s *Service) loadSessions(ctx context.Context, reportID int64) ([]review.Se
 	}
 	if err := participantRows.Err(); err != nil {
 		return nil, fmt.Errorf("cases: iterasi peserta sesi: %w", err)
+	}
+	return items, nil
+}
+
+const referralsByReportSQL = `
+SELECT rf.id, rf.service_type, rf.target_party_id, p.name,
+       rf.institution, rf.referral_date, rf.follow_up_status, COALESCE(rf.notes, ''),
+       rf.created_by, u.name
+FROM referrals rf
+LEFT JOIN parties p ON p.id = rf.target_party_id
+JOIN users u ON u.id = rf.created_by
+WHERE rf.report_id = $1
+ORDER BY rf.referral_date, rf.id`
+
+func (s *Service) loadReferrals(ctx context.Context, reportID int64) ([]referral.ReferralView, error) {
+	rows, err := s.pool.Query(ctx, referralsByReportSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca rujukan: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]referral.ReferralView, 0, 2)
+	for rows.Next() {
+		var (
+			item referral.ReferralView
+			date time.Time
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.ServiceType,
+			&item.TargetPartyID,
+			&item.TargetPartyName,
+			&item.Institution,
+			&date,
+			&item.FollowUpStatus,
+			&item.Notes,
+			&item.CreatedBy.ID,
+			&item.CreatedBy.Name,
+		); err != nil {
+			return nil, fmt.Errorf("cases: baca rujukan: %w", err)
+		}
+		item.ReferralDate = date.Format("2006-01-02")
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cases: iterasi rujukan: %w", err)
+	}
+	return items, nil
+}
+
+const recoveriesByReportSQL = `
+SELECT rm.id, rm.type, rm.note, rm.recorded_at, rm.created_by, u.name
+FROM recovery_monitorings rm
+JOIN users u ON u.id = rm.created_by
+WHERE rm.report_id = $1
+ORDER BY rm.recorded_at, rm.id`
+
+func (s *Service) loadRecoveries(ctx context.Context, reportID int64) ([]referral.RecoveryView, error) {
+	rows, err := s.pool.Query(ctx, recoveriesByReportSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca pemulihan: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]referral.RecoveryView, 0, 2)
+	for rows.Next() {
+		var (
+			item       referral.RecoveryView
+			recordedAt time.Time
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.Type,
+			&item.Note,
+			&recordedAt,
+			&item.CreatedBy.ID,
+			&item.CreatedBy.Name,
+		); err != nil {
+			return nil, fmt.Errorf("cases: baca pemulihan: %w", err)
+		}
+		item.RecordedAt = recordedAt.Format("2006-01-02")
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cases: iterasi pemulihan: %w", err)
 	}
 	return items, nil
 }
