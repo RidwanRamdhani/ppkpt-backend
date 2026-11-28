@@ -61,14 +61,8 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	}
 
 	prefix := fmt.Sprintf("%06d", time.Now().UnixNano()%1_000_000)
-	if _, err := pool.Exec(ctx, `DELETE FROM reports WHERE case_number LIKE $1`, prefix+"%"); err != nil {
-		t.Fatalf("bersihkan laporan lama: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `DELETE FROM reports WHERE case_number LIKE $1`, prefix+"%"); err != nil {
-			t.Logf("bersihkan laporan uji gagal (abaikan): %v", err)
-		}
-	})
+	cleanupReports(t, pool, prefix)
+	t.Cleanup(func() { cleanupReports(t, pool, prefix) })
 
 	env := &integrationEnv{
 		t:      t,
@@ -86,6 +80,29 @@ func newIntegrationEnv(t *testing.T) *integrationEnv {
 	env.satgasB = env.user(auth.RoleSatgas, "satgas_b")
 	env.pejabat = env.user(auth.RolePejabat, "pejabat")
 	return env
+}
+
+// cleanupReports menghapus laporan uji beserta rekomendasinya. Tabel
+// recommendations tidak memakai ON DELETE CASCADE dari conclusions, sehingga
+// barisnya harus dihapus lebih dulu agar DELETE reports tidak gagal.
+func cleanupReports(t *testing.T, pool *pgxpool.Pool, prefix string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM recommendations
+		WHERE conclusion_id IN (
+			SELECT c.id FROM conclusions c
+			JOIN reports r ON r.id = c.report_id
+			WHERE r.case_number LIKE $1
+		)`, prefix+"%",
+	); err != nil {
+		t.Logf("bersihkan rekomendasi uji gagal (abaikan): %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`DELETE FROM reports WHERE case_number LIKE $1`, prefix+"%",
+	); err != nil {
+		t.Logf("bersihkan laporan uji gagal (abaikan): %v", err)
+	}
 }
 
 func (e *integrationEnv) user(role, label string) int64 {
@@ -1004,4 +1021,101 @@ func TestIntegrasiDetailTidakDitemukan(t *testing.T) {
 	_, err := e.svc.Detail(context.Background(),
 		cases.Actor{UserID: e.satgasA, Role: auth.RoleSatgas}, 9_999_999_999, "")
 	appErrStatus(t, err, 404)
+}
+
+func TestIntegrasiDetailPhase10(t *testing.T) {
+	e := newIntegrationEnv(t)
+	ctx := context.Background()
+
+	reportID := e.report(reportSeed{
+		suffix: "21", status: "PEMERIKSAAN", assigned: int64Ptr(e.satgasA),
+		violation: "FISIK",
+	})
+
+	detail := func(userID int64) *cases.SatgasDetail {
+		t.Helper()
+		view, err := e.svc.Detail(ctx,
+			cases.Actor{UserID: userID, Role: auth.RoleSatgas}, reportID, "")
+		if err != nil {
+			t.Fatalf("Detail: %v", err)
+		}
+		return view.(*cases.SatgasDetail)
+	}
+
+	pj := detail(e.satgasA)
+	if !pj.IsPJ || !pj.CanWriteConclusion {
+		t.Errorf("PJ tahap PEMERIKSAAN harus dapat menulis kesimpulan: %+v", pj)
+	}
+	if pj.CanSubmitConclusion || pj.CanRecordDelivery || pj.CanClose {
+		t.Errorf("flag terlalu longgar sebelum kesimpulan ada: %+v", pj)
+	}
+
+	nonPJ := detail(e.satgasB)
+	if nonPJ.CanWriteConclusion || nonPJ.CanSubmitConclusion || nonPJ.CanRecordDelivery || nonPJ.CanClose {
+		t.Errorf("Satgas non-PJ tidak boleh mendapat flag tulis M07: %+v", nonPJ)
+	}
+
+	var conclusionID int64
+	if err := e.pool.QueryRow(ctx, `
+		INSERT INTO conclusions (report_id, result, summary, submission_status, created_by)
+		VALUES ($1, 'TERBUKTI', 'Ringkasan uji', 'DRAF', $2)
+		RETURNING id`, reportID, e.satgasA,
+	).Scan(&conclusionID); err != nil {
+		t.Fatalf("buat kesimpulan: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO recommendations (conclusion_id, category, severity, description)
+		VALUES ($1, 'ADMINISTRATIF', 'SEDANG', 'Teguran tertulis')`, conclusionID,
+	); err != nil {
+		t.Fatalf("buat rekomendasi: %v", err)
+	}
+
+	pj = detail(e.satgasA)
+	if !pj.CanSubmitConclusion {
+		t.Error("kesimpulan DRAF harus dapat diajukan")
+	}
+	if len(pj.Recommendations) != 1 || pj.Recommendations[0].Category != "ADMINISTRATIF" {
+		t.Errorf("rekomendasi = %+v", pj.Recommendations)
+	}
+	if pj.Decision != nil || len(pj.Deliveries) != 0 {
+		t.Errorf("keputusan/penyampaian belum ada: %+v %+v", pj.Decision, pj.Deliveries)
+	}
+
+	if _, err := e.pool.Exec(ctx, `
+		UPDATE conclusions SET submission_status = 'DIAJUKAN', submitted_at = now()
+		WHERE id = $1`, conclusionID,
+	); err != nil {
+		t.Fatalf("ajukan kesimpulan: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx,
+		`UPDATE reports SET status = 'PEMANTAUAN' WHERE id = $1`, reportID,
+	); err != nil {
+		t.Fatalf("ubah status: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO decisions (report_id, official_id, decision_type, sanction_detail, decided_at)
+		VALUES ($1, $2, 'SANKSI', 'Teguran tertulis', CURRENT_DATE)`, reportID, e.pejabat,
+	); err != nil {
+		t.Fatalf("buat keputusan: %v", err)
+	}
+	if _, err := e.pool.Exec(ctx, `
+		INSERT INTO result_deliveries (report_id, delivered_to, delivered_at, name_restored, note, created_by)
+		VALUES ($1, 'Korban', CURRENT_DATE, TRUE, 'Disampaikan', $2)`, reportID, e.satgasA,
+	); err != nil {
+		t.Fatalf("buat penyampaian: %v", err)
+	}
+
+	pj = detail(e.satgasA)
+	if pj.CanWriteConclusion || pj.CanSubmitConclusion {
+		t.Error("kesimpulan yang sudah diajukan tidak boleh ditulis lagi")
+	}
+	if pj.Decision == nil || pj.Decision.DecisionType != "SANKSI" || pj.Decision.Official == nil {
+		t.Errorf("keputusan = %+v", pj.Decision)
+	}
+	if len(pj.Deliveries) != 1 || !pj.Deliveries[0].NameRestored {
+		t.Errorf("penyampaian = %+v", pj.Deliveries)
+	}
+	if !pj.CanRecordDelivery || !pj.CanClose {
+		t.Errorf("flag penutupan salah: delivery=%v close=%v", pj.CanRecordDelivery, pj.CanClose)
+	}
 }

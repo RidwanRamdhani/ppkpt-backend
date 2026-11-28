@@ -226,6 +226,13 @@ func TestCaseRoutesTerdaftarDanTerlindungi(t *testing.T) {
 		{http.MethodPost, "/api/cases/1/referrals"},
 		{http.MethodPut, "/api/cases/1/referrals/2"},
 		{http.MethodPost, "/api/cases/1/recovery"},
+		{http.MethodPost, "/api/cases/1/conclusion"},
+		{http.MethodPost, "/api/cases/1/conclusion/submit"},
+		{http.MethodGet, "/api/cases/1/decision-view"},
+		{http.MethodPost, "/api/cases/1/decision"},
+		{http.MethodPost, "/api/cases/1/delivery"},
+		{http.MethodPost, "/api/cases/1/close"},
+		{http.MethodGet, "/api/evidences/1/download"},
 	}
 	for _, route := range routes {
 		rec := send(h, route.method, route.path, "", "")
