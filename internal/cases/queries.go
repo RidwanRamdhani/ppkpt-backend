@@ -260,6 +260,18 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	if err != nil {
 		return nil, err
 	}
+	detail.Recommendations, err = s.loadRecommendations(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	detail.Decision, err = s.loadDecision(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
+	detail.Deliveries, err = s.loadDeliveries(ctx, reportID)
+	if err != nil {
+		return nil, err
+	}
 	detail.StatusHistory, err = s.loadStatusHistory(ctx, reportID)
 	if err != nil {
 		return nil, err
@@ -277,7 +289,35 @@ func (s *Service) loadSatgasDetail(ctx context.Context, reportID, userID int64, 
 	detail.CanSetCondition = isPJ && referral.ConditionWritable(access.status)
 	detail.CanRefer = isPJ && access.status != string(workflow.Selesai)
 	detail.CanRecordRecovery = detail.CanRefer
+	detail.CanWriteConclusion = isPJ && access.status == string(workflow.Pemeriksaan)
+	detail.CanSubmitConclusion = detail.CanWriteConclusion &&
+		detail.Conclusion != nil && detail.Conclusion.SubmissionStatus == "DRAF"
+	detail.CanRecordDelivery = isPJ &&
+		(access.status == string(workflow.Keputusan) || access.status == string(workflow.Pemantauan))
+	detail.CanClose = canCloseCase(isPJ, access.status, detail.Decision, detail.Deliveries)
 	return detail, nil
+}
+
+// canCloseCase mencerminkan syarat penutupan pada layanan decision agar UI dapat
+// menyembunyikan tombol yang pasti ditolak server (FR-40/FR-41).
+func canCloseCase(isPJ bool, status string, decision *DecisionDetail, deliveries []DeliveryView) bool {
+	if !isPJ || decision == nil {
+		return false
+	}
+	switch decision.DecisionType {
+	case "SANKSI":
+		return status == string(workflow.Pemantauan) && len(deliveries) > 0
+	case "TIDAK_TERBUKTI":
+		if status != string(workflow.Keputusan) && status != string(workflow.Pemantauan) {
+			return false
+		}
+		for _, delivery := range deliveries {
+			if delivery.NameRestored {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 const officialDetailSQL = `
@@ -794,6 +834,112 @@ func (s *Service) loadRecoveries(ctx context.Context, reportID int64) ([]referra
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("cases: iterasi pemulihan: %w", err)
+	}
+	return items, nil
+}
+
+const recommendationsByReportSQL = `
+SELECT rc.id, rc.category, rc.severity, COALESCE(rc.description, '')
+FROM recommendations rc
+JOIN conclusions c ON c.id = rc.conclusion_id
+WHERE c.report_id = $1
+ORDER BY rc.id`
+
+func (s *Service) loadRecommendations(ctx context.Context, reportID int64) ([]RecommendationView, error) {
+	rows, err := s.pool.Query(ctx, recommendationsByReportSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca rekomendasi: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]RecommendationView, 0, 2)
+	for rows.Next() {
+		var item RecommendationView
+		if err := rows.Scan(&item.ID, &item.Category, &item.Severity, &item.Description); err != nil {
+			return nil, fmt.Errorf("cases: baca rekomendasi: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cases: iterasi rekomendasi: %w", err)
+	}
+	return items, nil
+}
+
+const decisionByReportSQL = `
+SELECT d.id, d.decision_type, COALESCE(d.sanction_detail, ''), d.decided_at,
+       d.official_id, u.name, d.created_at
+FROM decisions d
+JOIN users u ON u.id = d.official_id
+WHERE d.report_id = $1`
+
+func (s *Service) loadDecision(ctx context.Context, reportID int64) (*DecisionDetail, error) {
+	var (
+		view         DecisionDetail
+		decidedAt    time.Time
+		officialID   int64
+		officialName string
+	)
+	err := s.pool.QueryRow(ctx, decisionByReportSQL, reportID).Scan(
+		&view.ID,
+		&view.DecisionType,
+		&view.SanctionDetail,
+		&decidedAt,
+		&officialID,
+		&officialName,
+		&view.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca keputusan: %w", err)
+	}
+	view.DecidedAt = decidedAt.Format("2006-01-02")
+	view.Official = &Assignee{ID: officialID, Name: officialName}
+	return &view, nil
+}
+
+const deliveriesByReportSQL = `
+SELECT rd.id, rd.delivered_to, rd.delivered_at, rd.name_restored,
+       COALESCE(rd.note, ''), rd.created_by, u.name
+FROM result_deliveries rd
+JOIN users u ON u.id = rd.created_by
+WHERE rd.report_id = $1
+ORDER BY rd.delivered_at, rd.id`
+
+func (s *Service) loadDeliveries(ctx context.Context, reportID int64) ([]DeliveryView, error) {
+	rows, err := s.pool.Query(ctx, deliveriesByReportSQL, reportID)
+	if err != nil {
+		return nil, fmt.Errorf("cases: baca penyampaian hasil: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]DeliveryView, 0, 2)
+	for rows.Next() {
+		var (
+			item        DeliveryView
+			deliveredAt time.Time
+			creatorID   int64
+			creatorName string
+		)
+		if err := rows.Scan(
+			&item.ID,
+			&item.DeliveredTo,
+			&deliveredAt,
+			&item.NameRestored,
+			&item.Note,
+			&creatorID,
+			&creatorName,
+		); err != nil {
+			return nil, fmt.Errorf("cases: baca penyampaian hasil: %w", err)
+		}
+		item.DeliveredAt = deliveredAt.Format("2006-01-02")
+		item.CreatedBy = &Assignee{ID: creatorID, Name: creatorName}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("cases: iterasi penyampaian hasil: %w", err)
 	}
 	return items, nil
 }

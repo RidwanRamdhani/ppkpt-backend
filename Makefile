@@ -45,8 +45,10 @@ test:
 	$(GO) test ./... -race -cover -count=1
 
 # Memerlukan database yang sudah dimigrasi dan .env berisi DATABASE_URL.
+# -p 1 menjalankan paket satu per satu: tes integrasi berbagi satu database,
+# sehingga paket paralel dapat saling mengganggu hitungan global.
 test-integration:
-	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test ./internal/audit ./internal/auth ./internal/cases ./internal/referral ./internal/report ./internal/review ./internal/workflow -count=1
+	TEST_DATABASE_URL="$(DATABASE_URL)" $(GO) test -p 1 ./internal/audit ./internal/auth ./internal/cases ./internal/decision ./internal/referral ./internal/report ./internal/review ./internal/scenario ./internal/workflow -count=1
 
 # Uji end-to-end modul autentikasi terhadap API sungguhan (curl). Butuh database
 # yang sudah dimigrasi; API dijalankan otomatis bila belum berjalan.

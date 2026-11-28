@@ -137,6 +137,34 @@ type VerificationView struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+// RecommendationView adalah satu rekomendasi pada kesimpulan kasus.
+type RecommendationView struct {
+	ID          int64  `json:"id"`
+	Category    string `json:"category"`
+	Severity    string `json:"severity"`
+	Description string `json:"description"`
+}
+
+// DecisionDetail adalah keputusan Pejabat yang sudah tercatat.
+type DecisionDetail struct {
+	ID             int64     `json:"id"`
+	DecisionType   string    `json:"decision_type"`
+	SanctionDetail string    `json:"sanction_detail"`
+	DecidedAt      string    `json:"decided_at"`
+	Official       *Assignee `json:"official"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// DeliveryView adalah satu catatan penyampaian hasil kepada pihak terkait.
+type DeliveryView struct {
+	ID           int64     `json:"id"`
+	DeliveredTo  string    `json:"delivered_to"`
+	DeliveredAt  string    `json:"delivered_at"`
+	NameRestored bool      `json:"name_restored"`
+	Note         string    `json:"note"`
+	CreatedBy    *Assignee `json:"created_by"`
+}
+
 // StatusHistoryView adalah satu baris riwayat status kasus.
 type StatusHistoryView struct {
 	ID         int64     `json:"id"`
@@ -185,6 +213,9 @@ type SatgasDetail struct {
 	Sessions              []review.SessionView    `json:"sessions"`
 	Referrals             []referral.ReferralView `json:"referrals"`
 	Recoveries            []referral.RecoveryView `json:"recoveries"`
+	Recommendations       []RecommendationView    `json:"recommendations"`
+	Decision              *DecisionDetail         `json:"decision"`
+	Deliveries            []DeliveryView          `json:"deliveries"`
 	StatusHistory         []StatusHistoryView     `json:"status_history"`
 	Conclusion            *ConclusionSummary      `json:"conclusion"`
 	IsPJ                  bool                    `json:"is_pj"`
@@ -195,6 +226,10 @@ type SatgasDetail struct {
 	CanSetCondition       bool                    `json:"can_set_condition"`
 	CanRefer              bool                    `json:"can_refer"`
 	CanRecordRecovery     bool                    `json:"can_record_recovery"`
+	CanWriteConclusion    bool                    `json:"can_write_conclusion"`
+	CanSubmitConclusion   bool                    `json:"can_submit_conclusion"`
+	CanRecordDelivery     bool                    `json:"can_record_delivery"`
+	CanClose              bool                    `json:"can_close"`
 }
 
 // OfficialDetail adalah respons detail kasus untuk Pejabat. Hanya tersedia
